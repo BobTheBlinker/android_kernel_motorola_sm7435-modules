@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -7,6 +8,7 @@
 
 #include <drm/sde_drm.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/drm_edid.h>
 
 #include "msm_kms.h"
 #include "sde_kms.h"
@@ -253,8 +255,6 @@ int sde_wb_connector_set_modes(struct sde_wb_device *wb_dev,
 			memset(&dispmode, 0, sizeof(dispmode));
 			ret = drm_mode_convert_umode(wb_dev->drm_dev,
 					&dispmode, &modeinfo[i]);
-			/* null terminate the string */
-			modeinfo[i].name[DRM_DISPLAY_MODE_LEN - 1] = '\0';
 			if (ret) {
 				SDE_ERROR(
 					"failed to convert mode %d:\"%s\" %d %d %d %d %d %d %d %d %d %d 0x%x 0x%x status:%d rc:%d\n",
@@ -306,44 +306,132 @@ error:
 	return ret;
 }
 
-int sde_wb_connector_set_property(struct drm_connector *connector,
-		struct drm_connector_state *state,
-		int property_index,
-		uint64_t value,
-		void *display)
+static void _sde_wb_connector_clear_dnsc_blur(struct drm_connector_state *state)
 {
-	struct sde_wb_device *wb_dev = display;
-	struct drm_framebuffer *out_fb;
-	int rc = 0;
+	struct sde_connector_state *cstate = to_sde_connector_state(state);
+	int i;
 
-	SDE_DEBUG("\n");
+	for (i = 0; i < cstate->dnsc_blur_count; i++)
+		memset(&cstate->dnsc_blur_cfg[i], 0, sizeof(struct sde_drm_dnsc_blur_cfg));
+	cstate->dnsc_blur_count = 0;
+}
 
-	if (state && (property_index == CONNECTOR_PROP_OUT_FB)) {
-		const struct sde_format *sde_format;
+static int _sde_wb_connector_set_dnsc_blur(struct sde_wb_device *wb_dev,
+		struct drm_connector_state *state, void __user *usr_ptr)
+{
+	struct sde_connector_state *cstate = to_sde_connector_state(state);
+	struct sde_kms *sde_kms = sde_connector_get_kms(wb_dev->connector);
+	struct sde_drm_dnsc_blur_cfg *dnsc_blur_cfg = &cstate->dnsc_blur_cfg[0];
+	u32 copy_count;
+	int ret = 0, i;
 
-		out_fb = sde_connector_get_out_fb(state);
-		if (!out_fb)
-			goto done;
+	if (!sde_kms || !sde_kms->catalog)
+		return -EINVAL;
 
-		sde_format = sde_get_sde_format_ext(out_fb->format->format,
-				out_fb->modifier);
-		if (!sde_format) {
-			SDE_ERROR("failed to get sde format\n");
-			rc = -EINVAL;
-			goto done;
+	if (!usr_ptr)
+		goto disable;
+
+	/* copy only the first block */
+	if (copy_from_user(dnsc_blur_cfg, usr_ptr, sizeof(struct sde_drm_dnsc_blur_cfg))) {
+		SDE_ERROR("failed to copy dnsc_blur block 0 data\n");
+		ret = -EINVAL;
+		goto disable;
+	}
+
+	if (dnsc_blur_cfg->num_blocks > sde_kms->catalog->dnsc_blur_count) {
+		SDE_ERROR("invalid number of dnsc_blur blocks:%d\n", dnsc_blur_cfg->num_blocks);
+		ret = -EINVAL;
+		goto disable;
+	}
+
+	/* no further data required */
+	if (dnsc_blur_cfg->num_blocks <= 1)
+		goto end;
+
+	dnsc_blur_cfg++;
+	usr_ptr += sizeof(struct sde_drm_dnsc_blur_cfg);
+	copy_count = dnsc_blur_cfg->num_blocks - 1;
+
+	/* copy rest of the blocks */
+	if ((dnsc_blur_cfg->flags & DNSC_BLUR_INDEPENDENT_BLK_CFG)) {
+		if (copy_from_user(dnsc_blur_cfg, usr_ptr,
+				copy_count * sizeof(struct sde_drm_dnsc_blur_cfg))) {
+			SDE_ERROR("failed to copy dnsc_blur data\n");
+			ret = -EINVAL;
+			goto disable;
 		}
 
-		if (!sde_wb_is_format_valid(wb_dev, out_fb->format->format,
-				out_fb->modifier)) {
-			SDE_ERROR("unsupported writeback format 0x%x/0x%llx\n",
-					out_fb->format->format,
-					out_fb->modifier);
-			rc = -EINVAL;
-			goto done;
+	/* duplicate rest of the blocks */
+	} else if (dnsc_blur_cfg->flags & DNSC_BLUR_MIRROR_BLK_CFG) {
+		for (i = 0; i < copy_count; i++) {
+			memcpy(dnsc_blur_cfg, &cstate->dnsc_blur_cfg[0],
+					sizeof(struct sde_drm_dnsc_blur_cfg));
+			dnsc_blur_cfg++;
 		}
 	}
 
-done:
+end:
+	cstate->dnsc_blur_count = dnsc_blur_cfg->num_blocks;
+	return 0;
+
+disable:
+	_sde_wb_connector_clear_dnsc_blur(state);
+	return ret;
+}
+
+static int _sde_wb_connector_set_out_fb(struct sde_wb_device *wb_dev,
+		struct drm_connector_state *state)
+{
+	struct drm_framebuffer *out_fb;
+	const struct sde_format *sde_format;
+	int rc = 0;
+
+	out_fb = sde_connector_get_out_fb(state);
+	if (!out_fb)
+		goto end;
+
+	sde_format = sde_get_sde_format_ext(out_fb->format->format, out_fb->modifier);
+	if (!sde_format) {
+		SDE_ERROR("failed to get sde format\n");
+		rc = -EINVAL;
+		goto end;
+	}
+
+	if (!sde_wb_is_format_valid(wb_dev, out_fb->format->format, out_fb->modifier)) {
+		SDE_ERROR("unsupported writeback format 0x%x/0x%llx\n",
+				out_fb->format->format, out_fb->modifier);
+		rc = -EINVAL;
+		goto end;
+	}
+
+end:
+	return rc;
+}
+
+int sde_wb_connector_set_property(struct drm_connector *connector,
+		struct drm_connector_state *state, int idx, uint64_t value, void *display)
+{
+	struct sde_wb_device *wb_dev = display;
+	int rc = 0;
+
+	if (!connector || !state || !wb_dev) {
+		SDE_ERROR("invalid argument(s)\n");
+		return -EINVAL;
+	}
+
+	switch (idx) {
+	case CONNECTOR_PROP_OUT_FB:
+		rc = _sde_wb_connector_set_out_fb(wb_dev, state);
+		break;
+	case CONNECTOR_PROP_DNSC_BLUR:
+		rc = _sde_wb_connector_set_dnsc_blur(wb_dev, state,
+				(void __user *)(uintptr_t)value);
+		break;
+	default:
+		/* nothing to do */
+		break;
+	}
+
 	return rc;
 }
 
@@ -418,40 +506,48 @@ int sde_wb_connector_set_info_blob(struct drm_connector *connector,
 {
 	struct sde_wb_device *wb_dev = display;
 	const struct sde_format_extended *format_list;
-	struct msm_drm_private *priv = NULL;
-	struct sde_kms *sde_kms = NULL;
+	struct sde_kms *sde_kms;
+	struct sde_mdss_cfg *catalog;
+	int i;
 
 	if (!connector || !info || !display || !wb_dev->wb_cfg) {
 		SDE_ERROR("invalid params\n");
 		return -EINVAL;
 	}
 
+	sde_kms = sde_connector_get_kms(connector);
+	if (!sde_kms)
+		return -EINVAL;
+	catalog = sde_kms->catalog;
+
 	format_list = wb_dev->wb_cfg->format_list;
 
-	/*
-	 * Populate info buffer
-	 */
+	/* Populate info buffer */
 	if (format_list) {
 		sde_kms_info_start(info, "pixel_formats");
 		while (format_list->fourcc_format) {
-			sde_kms_info_append_format(info,
-					format_list->fourcc_format,
+			sde_kms_info_append_format(info, format_list->fourcc_format,
 					format_list->modifier);
 			++format_list;
 		}
 		sde_kms_info_stop(info);
 	}
 
-	sde_kms_info_add_keyint(info,
-			"wb_intf_index",
-			wb_dev->wb_idx - WB_0);
+	/* Populate info buffer with WB rotation output formats */
+	format_list = wb_dev->wb_cfg->rot_format_list;
+	if (format_list) {
+		sde_kms_info_start(info, "rot_output_formats");
+		while (format_list->fourcc_format) {
+			sde_kms_info_append_format(info, format_list->fourcc_format,
+					format_list->modifier);
+			++format_list;
+		}
+		sde_kms_info_stop(info);
+	}
 
-	sde_kms_info_add_keyint(info,
-			"maxlinewidth",
-			wb_dev->wb_cfg->sblk->maxlinewidth);
-
-	sde_kms_info_add_keyint(info,
-			"maxlinewidth_linear",
+	sde_kms_info_add_keyint(info, "wb_intf_index", wb_dev->wb_idx - WB_0);
+	sde_kms_info_add_keyint(info, "maxlinewidth", wb_dev->wb_cfg->sblk->maxlinewidth);
+	sde_kms_info_add_keyint(info, "maxlinewidth_linear",
 			wb_dev->wb_cfg->sblk->maxlinewidth_linear);
 
 	sde_kms_info_start(info, "features");
@@ -459,63 +555,42 @@ int sde_wb_connector_set_info_blob(struct drm_connector *connector,
 		sde_kms_info_append(info, "wb_ubwc");
 	sde_kms_info_stop(info);
 
-	if (wb_dev->drm_dev && wb_dev->drm_dev->dev_private) {
-		priv = wb_dev->drm_dev->dev_private;
-		if (!priv->kms) {
-			SDE_ERROR("invalid kms reference\n");
-			return -EINVAL;
-		}
+	sde_kms_info_add_keyint(info, "has_cwb_dither", test_bit(SDE_FEATURE_CWB_DITHER,
+				catalog->features));
 
-		sde_kms = to_sde_kms(priv->kms);
-		sde_kms_info_add_keyint(info, "has_cwb_dither", sde_kms->catalog->has_cwb_dither);
-	} else {
-		SDE_ERROR("invalid params %pK\n", wb_dev->drm_dev);
-		return -EINVAL;
+	if (catalog->cdm_count)
+		sde_kms_info_add_keyint(info, "cdm_count", catalog->cdm_count);
+
+	if (catalog->dnsc_blur_count && catalog->dnsc_blur_filters) {
+		sde_kms_info_add_keyint(info, "dnsc_blur_count", catalog->dnsc_blur_count);
+
+		sde_kms_info_start(info, "dnsc_blur_info");
+		for (i = 0; i < catalog->dnsc_blur_filter_count; i++)
+			sde_kms_info_append_dnsc_blur_filter_info(info,
+						&catalog->dnsc_blur_filters[i]);
+		sde_kms_info_stop(info);
 	}
 
 	return 0;
 }
 
-static void sde_wb_connector_install_dither_property(struct sde_wb_device *wb_dev,
-					struct sde_connector *c_conn)
+static void _sde_wb_connector_install_dither_property(struct sde_wb_device *wb_dev)
 {
+	struct sde_connector *c_conn = to_sde_connector(wb_dev->connector);
+	struct sde_kms *sde_kms = sde_connector_get_kms(wb_dev->connector);
+	struct sde_mdss_cfg *catalog;
 	char prop_name[DRM_PROP_NAME_LEN];
-	struct sde_kms *sde_kms = NULL;
-	struct msm_drm_private *priv = NULL;
-	struct sde_mdss_cfg *catalog = NULL;
 	u32 version = 0;
 
-	if (!wb_dev || !c_conn) {
-		SDE_ERROR("invalid args (s), wb_dev %pK, c_conn %pK\n", wb_dev, c_conn);
+	if (!sde_kms || !sde_kms->catalog)
 		return;
-	}
-
-	if (!wb_dev->drm_dev) {
-		SDE_ERROR("invalid drm_dev is null\n");
-		return;
-	}
-
-	if (!wb_dev->drm_dev->dev_private) {
-		SDE_ERROR("invalid dev_private is null\n");
-		return;
-	}
-
-	priv = wb_dev->drm_dev->dev_private;
-	if (!priv->kms) {
-		SDE_ERROR("invalid kms reference is null\n");
-		return;
-	}
-
-	sde_kms = to_sde_kms(priv->kms);
 	catalog = sde_kms->catalog;
 
-	if (!catalog->has_cwb_dither)
+	if (!test_bit(SDE_FEATURE_CWB_DITHER, catalog->features))
 		return;
 
-	version = SDE_COLOR_PROCESS_MAJOR(
-			catalog->pingpong[0].sblk->dither.version);
-	snprintf(prop_name, ARRAY_SIZE(prop_name), "%s%d",
-			"SDE_PP_CWB_DITHER_V", version);
+	version = SDE_COLOR_PROCESS_MAJOR(catalog->pingpong[0].sblk->dither.version);
+	snprintf(prop_name, ARRAY_SIZE(prop_name), "%s%d", "SDE_PP_CWB_DITHER_V", version);
 	switch (version) {
 	case 2:
 		msm_property_install_blob(&c_conn->property_info, prop_name,
@@ -531,19 +606,54 @@ int sde_wb_connector_post_init(struct drm_connector *connector, void *display)
 {
 	struct sde_connector *c_conn;
 	struct sde_wb_device *wb_dev = display;
+	struct msm_drm_private *priv;
+	struct sde_kms *sde_kms;
+	struct sde_mdss_cfg *catalog;
 	static const struct drm_prop_enum_list e_fb_translation_mode[] = {
 		{SDE_DRM_FB_NON_SEC, "non_sec"},
 		{SDE_DRM_FB_SEC, "sec"},
 	};
+	static const struct drm_prop_enum_list e_cache_state[] = {
+		{CACHE_STATE_DISABLED, "cache_state_disabled"},
+		{CACHE_STATE_ENABLED, "cache_state_enabled"},
+	};
 
-	if (!connector || !display || !wb_dev->wb_cfg) {
+	static const struct drm_prop_enum_list e_wb_usage_type[] = {
+		{WB_USAGE_WFD, "wb_usage_wfd"},
+		{WB_USAGE_CWB, "wb_usage_cwb"},
+		{WB_USAGE_OFFLINE_WB, "wb_usage_offline_wb"},
+		{WB_USAGE_ROT, "wb_usage_rot"},
+	};
+
+	static const struct drm_prop_enum_list e_wb_rotate_type[] = {
+		{WB_ROT_NONE, "wb_rot_none"},
+		{WB_ROT_SINGLE, "wb_rot_single"},
+		{WB_ROT_JOB1, "wb_rot_job1"},
+		{WB_ROT_JOB2, "wb_rot_job2"},
+	};
+
+	if (!connector || !display || !wb_dev->wb_cfg || !wb_dev->drm_dev->dev_private) {
 		SDE_ERROR("invalid params\n");
 		return -EINVAL;
 	}
 
+	priv = wb_dev->drm_dev->dev_private;
+	sde_kms = to_sde_kms(priv->kms);
+	if (!sde_kms || !sde_kms->catalog) {
+		SDE_ERROR("invalid sde_kms\n");
+		return -EINVAL;
+	}
+
+	catalog = sde_kms->catalog;
 	c_conn = to_sde_connector(connector);
 	wb_dev->connector = connector;
 	wb_dev->detect_status = connector_status_connected;
+
+	if (test_bit(SDE_SYS_CACHE_DISP, catalog->sde_sys_cache_type_map)
+			|| test_bit(SDE_SYS_CACHE_DISP_WB, catalog->sde_sys_cache_type_map))
+		msm_property_install_enum(&c_conn->property_info, "cache_state",
+			0x0, 0, e_cache_state, ARRAY_SIZE(e_cache_state),
+			0, CONNECTOR_PROP_CACHE_STATE);
 
 	/*
 	 * Add extra connector properties
@@ -565,7 +675,28 @@ int sde_wb_connector_post_init(struct drm_connector *connector, void *display)
 			ARRAY_SIZE(e_fb_translation_mode), 0,
 			CONNECTOR_PROP_FB_TRANSLATION_MODE);
 
-	sde_wb_connector_install_dither_property(wb_dev, c_conn);
+	if (wb_dev->wb_cfg->features & BIT(SDE_WB_PROG_LINE))
+		msm_property_install_range(&c_conn->property_info, "early_fence_line",
+			0x0, 0, UINT_MAX, 0, CONNECTOR_PROP_EARLY_FENCE_LINE);
+
+	if (catalog->dnsc_blur_count && catalog->dnsc_blur_filters)
+		msm_property_install_range(&c_conn->property_info, "dnsc_blur",
+			0x0, 0, ~0, 0, CONNECTOR_PROP_DNSC_BLUR);
+
+	if (wb_dev->wb_cfg->features & BIT(SDE_WB_LINEAR_ROTATION)) {
+		msm_property_install_enum(&c_conn->property_info, "wb_rotate_type",
+			0x0, 0, e_wb_rotate_type, ARRAY_SIZE(e_wb_rotate_type),
+			0, CONNECTOR_PROP_WB_ROT_TYPE);
+
+		msm_property_install_range(&c_conn->property_info, "wb_rot_bytes_per_clk",
+			0x0, 0, UINT_MAX, 0, CONNECTOR_PROP_WB_ROT_BYTES_PER_CLK);
+	}
+
+	msm_property_install_enum(&c_conn->property_info, "wb_usage_type",
+			0x0, 0, e_wb_usage_type, ARRAY_SIZE(e_wb_usage_type),
+			0, CONNECTOR_PROP_WB_USAGE_TYPE);
+
+	_sde_wb_connector_install_dither_property(wb_dev);
 
 	return 0;
 }
@@ -892,7 +1023,7 @@ static int sde_wb_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, wb_dev);
 
 	mutex_lock(&sde_wb_list_lock);
-	list_add(&wb_dev->wb_list, &sde_wb_list);
+	list_add_tail(&wb_dev->wb_list, &sde_wb_list);
 	mutex_unlock(&sde_wb_list_lock);
 
 	if (!_sde_wb_dev_init(wb_dev)) {

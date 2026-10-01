@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -9,6 +9,10 @@
 
 #include <linux/kernel.h>
 #include <linux/err.h>
+
+#include <drm/sde_drm.h>
+#include <drm/msm_drm_pp.h>
+#include <drm/drm_fourcc.h>
 
 #include "msm_drv.h"
 
@@ -46,7 +50,6 @@ enum sde_format_flags {
 	SDE_FORMAT_FLAG_COMPRESSED_BIT,
 	SDE_FORMAT_FLAG_ALPHA_SWAP_BIT,
 	SDE_FORMAT_FLAG_FP16_BIT,
-	SDE_FORMAT_FLAG_FSC_BIT,
 	SDE_FORMAT_FLAG_BIT_MAX,
 };
 
@@ -55,11 +58,8 @@ enum sde_format_flags {
 #define SDE_FORMAT_FLAG_COMPRESSED	BIT(SDE_FORMAT_FLAG_COMPRESSED_BIT)
 #define SDE_FORMAT_FLAG_ALPHA_SWAP	BIT(SDE_FORMAT_FLAG_ALPHA_SWAP_BIT)
 #define SDE_FORMAT_FLAG_FP16		BIT(SDE_FORMAT_FLAG_FP16_BIT)
-#define SDE_FORMAT_FLAG_FSC		BIT(SDE_FORMAT_FLAG_FSC_BIT)
 #define SDE_FORMAT_IS_YUV(X)		\
 	(test_bit(SDE_FORMAT_FLAG_YUV_BIT, (X)->flag))
-#define SDE_FORMAT_IS_FSC(X)		\
-	(test_bit(SDE_FORMAT_FLAG_FSC_BIT, (X)->flag))
 #define SDE_FORMAT_IS_DX(X)		\
 	(test_bit(SDE_FORMAT_FLAG_DX_BIT, (X)->flag))
 #define SDE_FORMAT_IS_LINEAR(X)		((X)->fetch_mode == SDE_FETCH_LINEAR)
@@ -126,6 +126,7 @@ enum sde_hw_blk_type {
 	SDE_HW_BLK_VDC,
 	SDE_HW_BLK_MERGE_3D,
 	SDE_HW_BLK_QDSS,
+	SDE_HW_BLK_DNSC_BLUR,
 	SDE_HW_BLK_MAX,
 };
 
@@ -146,11 +147,6 @@ enum sde_sspp {
 	SSPP_VIG2,
 	SSPP_VIG3,
 	SSPP_VIG_MAX = SSPP_VIG3,
-	SSPP_RGB0,
-	SSPP_RGB1,
-	SSPP_RGB2,
-	SSPP_RGB3,
-	SSPP_RGB_MAX = SSPP_RGB3,
 	SSPP_DMA0,
 	SSPP_DMA1,
 	SSPP_DMA2,
@@ -158,23 +154,16 @@ enum sde_sspp {
 	SSPP_DMA4,
 	SSPP_DMA5,
 	SSPP_DMA_MAX = SSPP_DMA5,
-	SSPP_CURSOR0,
-	SSPP_CURSOR1,
-	SSPP_CURSOR_MAX = SSPP_CURSOR1,
 	SSPP_MAX
 };
 
 #define SDE_SSPP_VALID(x) ((x) > SSPP_NONE && (x) < SSPP_MAX)
 #define SDE_SSPP_VALID_VIG(x) ((x) >= SSPP_VIG0 && (x) <= SSPP_VIG_MAX)
-#define SDE_SSPP_VALID_RGB(x) ((x) >= SSPP_RGB0 && (x) <= SSPP_RGB_MAX)
 #define SDE_SSPP_VALID_DMA(x) ((x) >= SSPP_DMA0 && (x) <= SSPP_DMA_MAX)
-#define SDE_SSPP_VALID_CURSOR(x) ((x) >= SSPP_CURSOR0 && (x) <= SSPP_CURSOR_MAX)
 
 enum sde_sspp_type {
 	SSPP_TYPE_VIG,
-	SSPP_TYPE_RGB,
 	SSPP_TYPE_DMA,
-	SSPP_TYPE_CURSOR,
 	SSPP_TYPE_MAX
 };
 
@@ -193,6 +182,8 @@ enum sde_lm {
 	LM_5,
 	LM_DCWB_DUMMY_0,
 	LM_DCWB_DUMMY_1,
+	LM_DCWB_DUMMY_2,
+	LM_DCWB_DUMMY_3,
 	LM_6,
 	LM_MAX
 };
@@ -224,13 +215,25 @@ enum sde_dspp {
 enum sde_ltm {
 	LTM_0 = DSPP_0,
 	LTM_1,
+	LTM_2,
+	LTM_3,
 	LTM_MAX
 };
 
 enum sde_rc {
 	RC_0 = DSPP_0,
 	RC_1,
+	RC_2,
+	RC_3,
 	RC_MAX
+};
+
+enum sde_demura {
+	DEMURA_0,
+	DEMURA_1,
+	DEMURA_2,
+	DEMURA_3,
+	DEMURA_MAX
 };
 
 enum sde_ds {
@@ -258,6 +261,11 @@ enum sde_cdm {
 	CDM_MAX
 };
 
+enum sde_dnsc_blur {
+	DNSC_BLUR_0 = 1,
+	DNSC_BLUR__MAX
+};
+
 enum sde_pingpong {
 	PINGPONG_0 = 1,
 	PINGPONG_1,
@@ -267,6 +275,8 @@ enum sde_pingpong {
 	PINGPONG_5,
 	PINGPONG_CWB_0,
 	PINGPONG_CWB_1,
+	PINGPONG_CWB_2,
+	PINGPONG_CWB_3,
 	PINGPONG_S0,
 	PINGPONG_MAX
 };
@@ -349,6 +359,8 @@ enum sde_cwb {
 enum sde_dcwb {
 	DCWB_0 = 0x1,
 	DCWB_1,
+	DCWB_2,
+	DCWB_3,
 	DCWB_MAX
 };
 
@@ -386,6 +398,7 @@ enum sde_merge_3d {
 	MERGE_3D_1,
 	MERGE_3D_2,
 	MERGE_3D_CWB_0,
+	MERGE_3D_CWB_1,
 	MERGE_3D_MAX
 };
 
@@ -475,6 +488,52 @@ enum sde_3d_blend_mode {
 	BLEND_3D_MAX
 };
 
+/**
+ * enum sde_sys_cache_state: states of disp system cache
+ * CACHE_STATE_DISABLED: sys cache has been disabled
+ * CACHE_STATE_ENABLED: sys cache has been enabled
+ * CACHE_STATE_NORMAL: sys cache is normal state
+ * CACHE_STATE_PRE_CACHE: frame cache is being prepared
+ * CACHE_STATE_FRAME_WRITE: sys cache is being written to
+ * CACHE_STATE_FRAME_READ: sys cache is being read
+ */
+enum sde_sys_cache_state {
+	CACHE_STATE_DISABLED,
+	CACHE_STATE_ENABLED,
+	CACHE_STATE_NORMAL,
+	CACHE_STATE_PRE_CACHE,
+	CACHE_STATE_FRAME_WRITE,
+	CACHE_STATE_FRAME_READ
+};
+
+/**
+ * enum sde_wb_usage_type: Type of usage of the WB connector
+ * WB_USAGE_WFD: WB connector used for WFD
+ * WB_USAGE_CWB: WB connector used for concurrent writeback
+ * WB_USAGE_OFFLINE_WB: WB connector used for 2-pass composition
+ * WB_USAGE_ROT: WB connector used for image rotation for 2 pass composition
+ */
+enum sde_wb_usage_type {
+	WB_USAGE_WFD,
+	WB_USAGE_CWB,
+	WB_USAGE_OFFLINE_WB,
+	WB_USAGE_ROT,
+};
+
+/**
+ * enum sde_wb_rot_type: Type of rotation use case of the WB connector
+ * WB_ROT_NONE : WB Rotation not in use
+ * WB_ROT_SINGLE: WB Rotation used in single job mode for full image rotation
+ * WB_ROT_JOB1: WB Rotation used for rotating half image as first-job
+ * WB_ROT_JOB2: WB Rotation used for rotating half image as second-job
+ */
+enum sde_wb_rot_type {
+	WB_ROT_NONE,
+	WB_ROT_SINGLE,
+	WB_ROT_JOB1,
+	WB_ROT_JOB2,
+};
+
 /** struct sde_format - defines the format configuration which
  * allows SDE HW to correctly fetch and decode the format
  * @base: base msm_format struture containing fourcc code
@@ -542,6 +601,14 @@ struct sde_rect {
 	u16 h;
 };
 
+struct sde_io_res {
+	bool enabled;
+	u32 src_w;
+	u32 src_h;
+	u32 dst_w;
+	u32 dst_h;
+};
+
 struct sde_csc_cfg {
 	/* matrix coefficients in S15.16 format */
 	uint32_t csc_mv[SDE_CSC_MATRIX_COEFF_SIZE];
@@ -587,6 +654,7 @@ struct sde_mdss_color {
 #define SDE_DBG_MASK_SID      (1 << 15)
 #define SDE_DBG_MASK_QDSS     (1 << 16)
 #define SDE_DBG_MASK_VDC      (1 << 17)
+#define SDE_DBG_MASK_DNSC_BLUR  (1 << 18)
 
 /**
  * struct sde_hw_cp_cfg: hardware dspp/lm feature payload.

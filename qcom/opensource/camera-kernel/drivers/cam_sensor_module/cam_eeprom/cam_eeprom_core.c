@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -484,11 +484,11 @@ static int32_t cam_eeprom_parse_memory_map(
 		for (cnt = 0; cnt < (payload_count);
 			cnt++) {
 			map[*num_map + cnt].page.addr =
-				i2c_random_wr->random_wr_payload[cnt].reg_addr;
+				i2c_random_wr->random_wr_payload_flex[cnt].reg_addr;
 			map[*num_map + cnt].page.addr_type =
 				i2c_random_wr->header.addr_type;
 			map[*num_map + cnt].page.data =
-				i2c_random_wr->random_wr_payload[cnt].reg_data;
+				i2c_random_wr->random_wr_payload_flex[cnt].reg_data;
 			map[*num_map + cnt].page.data_type =
 				i2c_random_wr->header.data_type;
 			map[*num_map + cnt].page.valid_size = 1;
@@ -738,7 +738,7 @@ static int32_t cam_eeprom_parse_write_memory_packet(
 	struct cam_cmd_i2c_info        *i2c_info = NULL;
 
 
-	offset = (uint32_t *)&csl_packet->payload;
+	offset = (uint32_t *)&csl_packet->payload_flex;
 	offset += (csl_packet->cmd_buf_offset / sizeof(uint32_t));
 	cmd_desc = (struct cam_cmd_buf_desc *)(offset);
 
@@ -973,7 +973,7 @@ static int32_t cam_eeprom_init_pkt_parser(struct cam_eeprom_ctrl_t *e_ctrl,
 	}
 	map = e_ctrl->cal_data.map;
 
-	offset = (uint32_t *)&csl_packet->payload;
+	offset = (uint32_t *)&csl_packet->payload_flex;
 	offset += (csl_packet->cmd_buf_offset / sizeof(uint32_t));
 	cmd_desc = (struct cam_cmd_buf_desc *)(offset);
 	rc = cam_packet_util_validate_cmd_desc(cmd_desc);
@@ -1131,7 +1131,7 @@ static int32_t cam_eeprom_get_cal_data(struct cam_eeprom_ctrl_t *e_ctrl,
 	size_t                remain_len = 0;
 
 	io_cfg = (struct cam_buf_io_cfg *) ((uint8_t *)
-		&csl_packet->payload +
+		&csl_packet->payload_flex +
 		csl_packet->io_configs_offset);
 	plane_offset = io_cfg->offsets[0];
 	mem_handle   = io_cfg->mem_handle[0];
@@ -1259,11 +1259,10 @@ static int32_t cam_eeprom_pkt_parse(struct cam_eeprom_ctrl_t *e_ctrl, void *arg)
 	int32_t                         rc = 0;
 	struct cam_control             *ioctl_ctrl = NULL;
 	struct cam_config_dev_cmd       dev_config;
-	uintptr_t                       generic_pkt_addr;
+	uintptr_t                        generic_pkt_addr;
 	size_t                          pkt_len;
 	size_t                          remain_len = 0;
 	struct cam_packet              *csl_packet = NULL;
-	struct cam_packet              *csl_packet_u = NULL;
 	struct cam_eeprom_soc_private  *soc_private =
 		(struct cam_eeprom_soc_private *)e_ctrl->soc_info.soc_private;
 	struct cam_sensor_power_ctrl_t *power_info = &soc_private->power_info;
@@ -1295,12 +1294,15 @@ static int32_t cam_eeprom_pkt_parse(struct cam_eeprom_ctrl_t *e_ctrl, void *arg)
 	}
 
 	remain_len -= (size_t)dev_config.offset;
-	csl_packet_u = (struct cam_packet *)
+	csl_packet = (struct cam_packet *)
 		(generic_pkt_addr + (uint32_t)dev_config.offset);
-	rc = cam_packet_util_copy_pkt_to_kmd(csl_packet_u, &csl_packet, remain_len);
-	if (rc) {
-		CAM_ERR(CAM_EEPROM, "Copying packet to KMD failed");
-		goto put_ref;
+
+	if (cam_packet_util_validate_packet(csl_packet,
+		remain_len)) {
+		CAM_ERR(CAM_EEPROM, "Invalid packet params");
+		cam_mem_put_cpu_buf(dev_config.packet_handle);
+		rc = -EINVAL;
+		return rc;
 	}
 
 	switch (csl_packet->header.op_code & 0xFFFFFF) {
@@ -1310,7 +1312,8 @@ static int32_t cam_eeprom_pkt_parse(struct cam_eeprom_ctrl_t *e_ctrl, void *arg)
 					e_ctrl->soc_info.dev->of_node, e_ctrl);
 			if (rc < 0) {
 				CAM_ERR(CAM_EEPROM, "Failed: rc : %d", rc);
-				goto end;
+				cam_mem_put_cpu_buf(dev_config.packet_handle);
+				return rc;
 			}
 			rc = cam_eeprom_get_cal_data(e_ctrl, csl_packet);
 			vfree(e_ctrl->cal_data.mapdata);
@@ -1325,7 +1328,8 @@ static int32_t cam_eeprom_pkt_parse(struct cam_eeprom_ctrl_t *e_ctrl, void *arg)
 		if (rc) {
 			CAM_ERR(CAM_EEPROM,
 				"Failed in parsing the pkt");
-			goto end;
+			cam_mem_put_cpu_buf(dev_config.packet_handle);
+			return rc;
 		}
 
 		e_ctrl->cal_data.mapdata =
@@ -1383,7 +1387,8 @@ static int32_t cam_eeprom_pkt_parse(struct cam_eeprom_ctrl_t *e_ctrl, void *arg)
 			csl_packet, e_ctrl);
 		if (rc < 0) {
 			CAM_ERR(CAM_EEPROM, "Failed: rc : %d", rc);
-			goto end;
+			cam_mem_put_cpu_buf(dev_config.packet_handle);
+			return rc;
 		}
 
 		rc = cam_eeprom_power_up(e_ctrl,
@@ -1404,7 +1409,8 @@ static int32_t cam_eeprom_pkt_parse(struct cam_eeprom_ctrl_t *e_ctrl, void *arg)
 			e_ctrl->eebin_info.size);
 		if (rc < 0) {
 			CAM_ERR(CAM_EEPROM, "Failed in erase : %d", rc);
-			goto memdata_free;
+			cam_mem_put_cpu_buf(dev_config.packet_handle);
+			return rc;
 		}
 
 		/* Buffer time margin */
@@ -1413,7 +1419,8 @@ static int32_t cam_eeprom_pkt_parse(struct cam_eeprom_ctrl_t *e_ctrl, void *arg)
 		rc = cam_eeprom_write(e_ctrl);
 		if (rc < 0) {
 			CAM_ERR(CAM_EEPROM, "Failed: rc : %d", rc);
-			goto memdata_free;
+			cam_mem_put_cpu_buf(dev_config.packet_handle);
+			return rc;
 		}
 
 		rc = cam_eeprom_power_down(e_ctrl);
@@ -1430,9 +1437,7 @@ static int32_t cam_eeprom_pkt_parse(struct cam_eeprom_ctrl_t *e_ctrl, void *arg)
 		rc = -EINVAL;
 		break;
 	}
-end:
-	cam_common_mem_free(csl_packet);
-put_ref:
+
 	cam_mem_put_cpu_buf(dev_config.packet_handle);
 	return rc;
 power_down:
@@ -1449,7 +1454,6 @@ error:
 	e_ctrl->cal_data.num_data = 0;
 	e_ctrl->cal_data.num_map = 0;
 	e_ctrl->cam_eeprom_state = CAM_EEPROM_ACQUIRE;
-	cam_common_mem_free(csl_packet);
 	return rc;
 }
 

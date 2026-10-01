@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2021-2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2019, 2021, The Linux Foundation. All rights reserved.
  */
 
@@ -50,13 +50,16 @@
  * @SDE_IRQ_TYPE_PROG_LINE:		Programmable Line interrupt
  * @SDE_IRQ_TYPE_AD4_BL_DONE:		AD4 backlight
  * @SDE_IRQ_TYPE_CTL_START:		Control start
+ * @SDE_IRQ_TYPE_CTL_DONE:		Frame transfer complete
  * @SDE_IRQ_TYPE_INTF_TEAR_RD_PTR:	INTF Tear read pointer
  * @SDE_IRQ_TYPE_INTF_TEAR_WR_PTR:	INTF Tear write pointer
  * @SDE_IRQ_TYPE_INTF_TEAR_AUTO_REF:	INTF Tear auto refresh
- * @SDE_IRQ_TYPE_INTF_TEAR_TEAR_CHECK:	INTF Tear Tear check
- * @SDE_IRQ_TYPE_INTF_TEAR_TE_CHECK:	INTF Tear TE detection
+ * @SDE_IRQ_TYPE_INTF_TEAR_TEAR_DETECT: INTF Tear Tear detection
+ * @SDE_IRQ_TYPE_INTF_TEAR_TE_ASSERT:   INTF Tear TE Assert detection
+ * @SDE_IRQ_TYPE_INTF_TEAR_TE_DEASSERT: INTF Tear TE Deassert detection
  * @SDE_IRQ_TYPE_LTM_STATS_DONE:	LTM stats done interrupt
  * @SDE_IRQ_TYPE_LTM_STATS_WB_PB:	LTM stats WB push back interrupt
+ * @SDE_IRQ_TYPE_PROG_LINE:		Programmable Line interrupt for WB
  * @SDE_IRQ_TYPE_RESERVED:		Reserved for expansion
  */
 enum sde_intr_type {
@@ -87,13 +90,16 @@ enum sde_intr_type {
 	SDE_IRQ_TYPE_PROG_LINE,
 	SDE_IRQ_TYPE_AD4_BL_DONE,
 	SDE_IRQ_TYPE_CTL_START,
+	SDE_IRQ_TYPE_CTL_DONE,
 	SDE_IRQ_TYPE_INTF_TEAR_RD_PTR,
 	SDE_IRQ_TYPE_INTF_TEAR_WR_PTR,
 	SDE_IRQ_TYPE_INTF_TEAR_AUTO_REF,
-	SDE_IRQ_TYPE_INTF_TEAR_TEAR_CHECK,
-	SDE_IRQ_TYPE_INTF_TEAR_TE_CHECK,
+	SDE_IRQ_TYPE_INTF_TEAR_TEAR_DETECT,
+	SDE_IRQ_TYPE_INTF_TEAR_TE_ASSERT,
+	SDE_IRQ_TYPE_INTF_TEAR_TE_DEASSERT,
 	SDE_IRQ_TYPE_LTM_STATS_DONE,
 	SDE_IRQ_TYPE_LTM_STATS_WB_PB,
+	SDE_IRQ_TYPE_WB_PROG_LINE,
 	SDE_IRQ_TYPE_RESERVED,
 };
 
@@ -173,6 +179,15 @@ struct sde_hw_intr_ops {
 	 * @irq_idx:	Lookup irq index return from irq_idx_lookup
 	 */
 	void (*clear_interrupt_status)(
+			struct sde_hw_intr *intr,
+			int irq_idx);
+
+	/**
+	 * clear_intr_status_nolock() - clears the HW interrupts without lock
+	 * @intr:	HW interrupt handle
+	 * @irq_idx:	Lookup irq index return from irq_idx_lookup
+	 */
+	void (*clear_intr_status_nolock)(
 			struct sde_hw_intr *intr,
 			int irq_idx);
 

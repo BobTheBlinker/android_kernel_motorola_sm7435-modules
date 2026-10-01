@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/of.h>
@@ -627,7 +627,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v0[] = {
 		CAP_FLAG_NONE,
 		{BITRATE_MODE},
 		{STAGE},
-		msm_vidc_adjust_lowlatency_mode, NULL},
+		msm_vidc_adjust_enc_lowlatency_mode, NULL},
 
 	{LOWLATENCY_MODE, DEC, H264|HEVC|VP9,
 		V4L2_MPEG_MSM_VIDC_DISABLE, V4L2_MPEG_MSM_VIDC_ENABLE,
@@ -1981,16 +1981,6 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR},
 
-	{VUI_TIMING_INFO, ENC, CODECS_ALL,
-		V4L2_MPEG_MSM_VIDC_DISABLE,
-		V4L2_MPEG_MSM_VIDC_ENABLE,
-		1, V4L2_MPEG_MSM_VIDC_DISABLE,
-		V4L2_CID_MPEG_VIDC_VUI_TIMING_INFO,
-		HFI_PROP_DISABLE_VUI_TIMING_INFO,
-		CAP_FLAG_OUTPUT_PORT,
-		{0}, {0},
-		NULL, msm_vidc_set_vui_timing_info},
-
 	{META_SEQ_HDR_NAL, ENC, CODECS_ALL,
 		V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_MPEG_MSM_VIDC_ENABLE,
@@ -2174,7 +2164,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 		CAP_FLAG_NONE,
 		{BITRATE_MODE},
 		{STAGE},
-		msm_vidc_adjust_lowlatency_mode, NULL},
+		msm_vidc_adjust_enc_lowlatency_mode, NULL},
 
 	{LOWLATENCY_MODE, DEC, H264|HEVC|VP9,
 		V4L2_MPEG_MSM_VIDC_DISABLE, V4L2_MPEG_MSM_VIDC_ENABLE,
@@ -3263,7 +3253,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 	{PIX_FMTS, ENC, HEIC,
 		MSM_VIDC_FMT_NV12,
 		MSM_VIDC_FMT_P010,
-		MSM_VIDC_FMT_NV12 | MSM_VIDC_FMT_NV21 | MSM_VIDC_FMT_P010,
+		MSM_VIDC_FMT_NV12 | MSM_VIDC_FMT_P010,
 		MSM_VIDC_FMT_NV12,
 		0, 0,
 		CAP_FLAG_ROOT,
@@ -3527,16 +3517,6 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR},
 
-	{VUI_TIMING_INFO, ENC, CODECS_ALL,
-		V4L2_MPEG_MSM_VIDC_DISABLE,
-		V4L2_MPEG_MSM_VIDC_ENABLE,
-		1, V4L2_MPEG_MSM_VIDC_DISABLE,
-		V4L2_CID_MPEG_VIDC_VUI_TIMING_INFO,
-		HFI_PROP_DISABLE_VUI_TIMING_INFO,
-		CAP_FLAG_OUTPUT_PORT,
-		{0}, {0},
-		NULL, msm_vidc_set_vui_timing_info},
-
 	{META_SEQ_HDR_NAL, ENC, CODECS_ALL,
 		V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_MPEG_MSM_VIDC_ENABLE,
@@ -3720,7 +3700,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		CAP_FLAG_NONE,
 		{BITRATE_MODE},
 		{STAGE},
-		msm_vidc_adjust_lowlatency_mode, NULL},
+		msm_vidc_adjust_enc_lowlatency_mode, NULL},
 
 	{LOWLATENCY_MODE, DEC, H264|HEVC|VP9,
 		V4L2_MPEG_MSM_VIDC_DISABLE, V4L2_MPEG_MSM_VIDC_ENABLE,
@@ -4263,12 +4243,9 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		{0},
 		NULL, msm_vidc_set_u32_enum},
 
-	// BEGIN Motorola yangzy19 IKSWT-112461:Increase the level range of the Venus.H264.DEC.
-	// The solution is to cherry pick some configuration of V0 into V2.
-	// V2 changed from V4L2_MPEG_VIDEO_H264_LEVEL_5_2 to V4L2_MPEG_VIDEO_H264_LEVEL_6_0.
 	{LEVEL, DEC, H264,
 		V4L2_MPEG_VIDEO_H264_LEVEL_1_0,
-		V4L2_MPEG_VIDEO_H264_LEVEL_6_0,
+		V4L2_MPEG_VIDEO_H264_LEVEL_5_2,
 		BIT(V4L2_MPEG_VIDEO_H264_LEVEL_1_0) |
 		BIT(V4L2_MPEG_VIDEO_H264_LEVEL_1B) |
 		BIT(V4L2_MPEG_VIDEO_H264_LEVEL_1_1) |
@@ -4285,16 +4262,14 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		BIT(V4L2_MPEG_VIDEO_H264_LEVEL_4_2) |
 		BIT(V4L2_MPEG_VIDEO_H264_LEVEL_5_0) |
 		BIT(V4L2_MPEG_VIDEO_H264_LEVEL_5_1) |
-		BIT(V4L2_MPEG_VIDEO_H264_LEVEL_5_2) |
-		BIT(V4L2_MPEG_VIDEO_H264_LEVEL_6_0),
-		V4L2_MPEG_VIDEO_H264_LEVEL_6_0,
+		BIT(V4L2_MPEG_VIDEO_H264_LEVEL_5_2),
+		V4L2_MPEG_VIDEO_H264_LEVEL_5_2,
 		V4L2_CID_MPEG_VIDEO_H264_LEVEL,
 		HFI_PROP_LEVEL,
 		CAP_FLAG_ROOT | CAP_FLAG_OUTPUT_PORT | CAP_FLAG_MENU,
 		{0},
 		{0},
 		NULL, msm_vidc_set_u32_enum},
-	// END IKSWT-112461
 
 	{LEVEL, ENC, H264,
 		V4L2_MPEG_VIDEO_H264_LEVEL_1_0,
@@ -4809,7 +4784,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 	{PIX_FMTS, ENC, HEIC,
 		MSM_VIDC_FMT_NV12,
 		MSM_VIDC_FMT_P010,
-		MSM_VIDC_FMT_NV12 | MSM_VIDC_FMT_NV21 | MSM_VIDC_FMT_P010,
+		MSM_VIDC_FMT_NV12 | MSM_VIDC_FMT_P010,
 		MSM_VIDC_FMT_NV12,
 		0, 0,
 		CAP_FLAG_ROOT,

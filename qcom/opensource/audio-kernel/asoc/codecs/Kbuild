@@ -207,6 +207,7 @@ endif
 
 ifdef CONFIG_SND_SOC_MSM_HDMI_CODEC_RX
 	HDMICODEC_OBJS += msm_hdmi_codec_rx.o
+	CFLAGS_msm_hdmi_codec_rx.o += -I$(AUDIO_ROOT)/../mm-drivers/msm_ext_display/include
 endif
 
 ifdef CONFIG_SND_SOC_WCD_IRQ
@@ -225,9 +226,6 @@ INCS +=		$(COMMON_INC) \
 
 EXTRA_CFLAGS += $(INCS)
 
-ifneq (,$(findstring kobe,$(TARGET_PRODUCT)))
-       EXTRA_CFLAGS += -DFCNT_GREEN_RUST
-endif
 
 CDEFINES +=	-DANI_LITTLE_BYTE_ENDIAN \
 		-DANI_LITTLE_BIT_ENDIAN \
@@ -262,9 +260,6 @@ ifeq ($(KERNEL_BUILD), 1)
 	obj-y	+= lpass-cdc/
 	obj-y	+= wsa883x/
 	obj-y	+= rouleur/
-	obj-y   += aw882xx/
-	obj-y   += aw87xxx/
-	obj-y   += fs19xx/
 endif
 # Module information used by KBuild framework
 obj-$(CONFIG_WCD9XXX_CODEC_CORE) += wcd_core_dlkm.o

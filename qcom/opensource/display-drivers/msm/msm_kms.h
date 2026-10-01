@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -47,8 +47,6 @@
 #define MSM_MODE_FLAG_SEAMLESS_POMS_VID			(1<<6)
 /* Request to switch the panel mode to command */
 #define MSM_MODE_FLAG_SEAMLESS_POMS_CMD			(1<<7)
-/* Indicates Field sequential color mode is enabled */
-#define MSM_MODE_FLAG_FSC_MODE				(1<<8)
 
 /* As there are different display controller blocks depending on the
  * snapdragon version, the kms support is split out and the appropriate
@@ -112,9 +110,7 @@ struct msm_kms_funcs {
 				const int32_t connector_id);
 	/* pm suspend/resume hooks */
 	int (*pm_suspend)(struct device *dev);
-	int (*pm_freeze_late)(struct device *dev);
 	int (*pm_resume)(struct device *dev);
-	int (*pm_restore)(struct device *dev);
 	/* cleanup: */
 	void (*destroy)(struct msm_kms *kms);
 	/* get address space */
@@ -124,10 +120,10 @@ struct msm_kms_funcs {
 	struct device *(*get_address_space_device)(
 			struct msm_kms *kms,
 			unsigned int domain);
-#ifdef CONFIG_DEBUG_FS
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 	/* debugfs: */
 	int (*debugfs_init)(struct msm_kms *kms, struct drm_minor *minor);
-#endif
+#endif /* CONFIG_DEBUG_FS */
 	/* destroys debugfs */
 	void (*debugfs_destroy)(struct msm_kms *kms);
 	/* handle continuous splash  */
@@ -144,15 +140,13 @@ struct msm_kms_funcs {
 	/* topology dsc information */
 	int (*get_dsc_count)(const struct msm_kms *kms,
 			u32 hdisplay, u32 *num_dsc);
-	/* set panel feature */
-	int (*set_panel_feature)(const struct msm_kms *kms,
-			struct panel_param_info param_info);
+	bool (*in_trusted_vm)(const struct msm_kms *kms);
 };
 
 struct msm_kms {
 	const struct msm_kms_funcs *funcs;
 
-	/* irq number to be passed on to drm_irq_install */
+	/* irq number to be passed on to msm_irq_install */
 	int irq;
 
 	/* mapper-id used to request GEM buffer mapped for scanout: */
@@ -180,12 +174,12 @@ static inline void msm_kms_init(struct msm_kms *kms,
 	kms->funcs = funcs;
 }
 
-#ifdef CONFIG_DRM_MSM_MDP4
+#if IS_ENABLED(CONFIG_DRM_MSM_MDP4)
 struct msm_kms *mdp4_kms_init(struct drm_device *dev);
 #else
 static inline
 struct msm_kms *mdp4_kms_init(struct drm_device *dev) { return NULL; };
-#endif
+#endif /* CONFIG_DRM_MSM_MDP4 */
 #if IS_ENABLED(CONFIG_DRM_MSM_MDP5)
 struct msm_kms *mdp5_kms_init(struct drm_device *dev);
 int msm_mdss_init(struct drm_device *dev);
@@ -270,11 +264,6 @@ static inline bool msm_is_mode_seamless_dyn_clk(
 {
 	return mode ? (mode->private_flags & MSM_MODE_FLAG_SEAMLESS_DYN_CLK)
 		: false;
-}
-
-static inline bool msm_is_mode_fsc(const struct msm_display_mode *mode)
-{
-	return (mode->private_flags & MSM_MODE_FLAG_FSC_MODE);
 }
 
 static inline bool msm_needs_vblank_pre_modeset(

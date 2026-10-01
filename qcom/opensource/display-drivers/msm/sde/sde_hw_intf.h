@@ -10,7 +10,6 @@
 #include "sde_hw_catalog.h"
 #include "sde_hw_mdss.h"
 #include "sde_hw_util.h"
-#include "sde_hw_blk.h"
 #include "sde_kms.h"
 
 struct sde_hw_intf;
@@ -41,7 +40,6 @@ struct intf_timing_params {
 	bool poms_align_vsync;	/* poms with vsync aligned */
 	u32 dce_bytes_per_line;
 	u32 vrefresh;
-	bool fsc_mode;
 };
 
 struct intf_prog_fetch {
@@ -58,8 +56,10 @@ struct intf_status {
 };
 
 struct intf_tear_status {
-	u32 read_count;		/* frame & line count for tear init value */
-	u32 write_count;	/* frame & line count for tear write */
+	u32 read_frame_count;	/* frame count for tear init value */
+	u32 read_line_count;	/* line count for tear init value */
+	u32 write_frame_count;	/* frame count for tear write */
+	u32 write_line_count;	/* line count for tear write */
 };
 
 struct intf_avr_params {
@@ -68,7 +68,23 @@ struct intf_avr_params {
 	u32 avr_mode; /* one of enum @sde_rm_qsync_modes */
 	u32 avr_step_lines; /* 0 or 1 means disabled */
 };
-
+/**
+ * struct intf_wd_jitter_params : Interface to the INTF WD Jitter params.
+ * jitter : max instantaneous jitter.
+ * ltj_max : max long term jitter value.
+ * ltj_slope : slope of long term jitter.
+ *ltj_step_dir: direction of the step in LTJ
+ *ltj_initial_val: LTJ initial value
+ *ltj_fractional_val:  LTJ fractional initial value
+ */
+struct intf_wd_jitter_params {
+	u32 jitter;
+	u32 ltj_max;
+	u32 ltj_slope;
+	u8 ltj_step_dir;
+	u32 ltj_initial_val;
+	u32 ltj_fractional_val;
+};
 /**
  * struct sde_hw_intf_ops : Interface to the interface Hw driver functions
  *  Assumption is these functions will be called after clocks are enabled
@@ -83,6 +99,9 @@ struct intf_avr_params {
  * @ get_underrun_line_count: reads current underrun pixel clock count and
  *                            converts it into line count
  * @setup_vsync_source: Configure vsync source selection for intf
+ * @configure_wd_jitter: Configure WD jitter.
+ * @ write_wd_ltj: Write WD long term jitter.
+ * @get_wd_ltj_status: Read WD long term jitter status.
  * @bind_pingpong_blk: enable/disable the connection with pingpong which will
  *                     feed pixels to this interface
  */
@@ -118,6 +137,12 @@ struct sde_hw_intf_ops {
 	u32 (*get_underrun_line_count)(struct sde_hw_intf *intf);
 
 	void (*setup_vsync_source)(struct sde_hw_intf *intf, u32 frame_rate);
+	void (*configure_wd_jitter)(struct sde_hw_intf *intf,
+			struct intf_wd_jitter_params *wd_jitter);
+	void (*write_wd_ltj)(struct sde_hw_intf *intf,
+			struct intf_wd_jitter_params *wd_jitter);
+	void (*get_wd_ltj_status)(struct sde_hw_intf *intf,
+			struct intf_wd_jitter_params *wd_jitter);
 
 	void (*bind_pingpong_blk)(struct sde_hw_intf *intf,
 			bool enable,
@@ -224,7 +249,7 @@ struct sde_hw_intf_ops {
 	/**
 	 * Get the HW vsync timestamp counter
 	 */
-	u64 (*get_vsync_timestamp)(struct sde_hw_intf *intf);
+	u64 (*get_vsync_timestamp)(struct sde_hw_intf *intf, bool is_vid);
 
 	/**
 	 * Enable processing of 2 pixels per clock
@@ -242,10 +267,14 @@ struct sde_hw_intf_ops {
 	 */
 	void (*override_tear_rd_ptr_val)(struct sde_hw_intf *intf,
 			u32 adjusted_linecnt);
+
+	/**
+	 * Check if intf supports 32-bit registers for TE
+	 */
+	bool (*is_te_32bit_supported)(struct sde_hw_intf *intf);
 };
 
 struct sde_hw_intf {
-	struct sde_hw_blk base;
 	struct sde_hw_blk_reg_map hw;
 
 	/* intf */
@@ -259,13 +288,13 @@ struct sde_hw_intf {
 };
 
 /**
- * to_sde_hw_intf - convert base object sde_hw_base to container
- * @hw: Pointer to base hardware block
+ * to_sde_hw_intf - convert base hw object to sde_hw_intf container
+ * @hw: Pointer to hardware block register map object
  * return: Pointer to hardware block container
  */
-static inline struct sde_hw_intf *to_sde_hw_intf(struct sde_hw_blk *hw)
+static inline struct sde_hw_intf *to_sde_hw_intf(struct sde_hw_blk_reg_map *hw)
 {
-	return container_of(hw, struct sde_hw_intf, base);
+	return container_of(hw, struct sde_hw_intf, hw);
 }
 
 /**
@@ -275,14 +304,14 @@ static inline struct sde_hw_intf *to_sde_hw_intf(struct sde_hw_blk *hw)
  * @addr: mapped register io address of MDP
  * @m :   pointer to mdss catalog data
  */
-struct sde_hw_intf *sde_hw_intf_init(enum sde_intf idx,
+struct sde_hw_blk_reg_map *sde_hw_intf_init(enum sde_intf idx,
 		void __iomem *addr,
 		struct sde_mdss_cfg *m);
 
 /**
  * sde_hw_intf_destroy(): Destroys INTF driver context
- * @intf:   Pointer to INTF driver context
+ * @hw: Pointer to hardware block register map object
  */
-void sde_hw_intf_destroy(struct sde_hw_intf *intf);
+void sde_hw_intf_destroy(struct sde_hw_blk_reg_map *hw);
 
 #endif /*_SDE_HW_INTF_H */

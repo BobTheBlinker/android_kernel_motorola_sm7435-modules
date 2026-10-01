@@ -1,4 +1,5 @@
 /* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -23,7 +24,7 @@
 #include <dsp/spf-core.h>
 #include <dsp/digital-cdc-rsc-mgr.h>
 
-#define APM_STATE_READY_TIMEOUT_MS    20000
+#define APM_STATE_READY_TIMEOUT_MS    10000
 #define Q6_READY_TIMEOUT_MS 1000
 #define Q6_CLOSE_ALL_TIMEOUT_MS 5000
 #define APM_CMD_GET_SPF_STATE 0x01001021
@@ -31,6 +32,7 @@
 #define APM_CMD_RSP_GET_SPF_STATE 0x02001007
 #define APM_MODULE_INSTANCE_ID   0x00000001
 #define GPR_SVC_ADSP_CORE 0x3
+#define ADD_CHILD_DEVICES_APM_TIMEOUT_MS 10000
 
 struct spf_core {
 	struct gpr_device *adev;

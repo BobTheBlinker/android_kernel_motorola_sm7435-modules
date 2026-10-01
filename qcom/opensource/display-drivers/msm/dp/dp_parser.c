@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
+ * Copyright (c) 2021-2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/of_gpio.h>
 #include <linux/of_platform.h>
-
+#include <linux/version.h>
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+#include <linux/pinctrl/consumer.h>
+#endif
 #include "dp_parser.h"
 #include "dp_debug.h"
 
@@ -167,17 +170,6 @@ static int dp_parser_misc(struct dp_parser *parser)
 	if (rc)
 		parser->max_lclk_khz = DP_MAX_LINK_CLK_KHZ;
 
-	parser->display_type = of_get_property(of_node,
-				"qcom,display-type", NULL);
-	if (!parser->display_type)
-		parser->display_type = "unknown";
-
-	parser->dp_downgrade = of_property_read_bool(of_node,
-		"qcom,dp-downgrade");
-
-	DP_INFO("dp_parser_misc max_pclk_khz=%d, max_lclk_khz=%d dp_downgrade=%d\n",
-		parser->max_pclk_khz, parser->max_lclk_khz, parser->dp_downgrade);
-
 	return 0;
 }
 
@@ -217,23 +209,6 @@ static int dp_parser_pinctrl(struct dp_parser *parser)
 		goto error;
 	}
 
-	if (parser->no_aux_switch && parser->lphw_hpd) {
-		pinctrl->state_hpd_tlmm = pinctrl->state_hpd_ctrl = NULL;
-
-		pinctrl->state_hpd_tlmm = pinctrl_lookup_state(pinctrl->pin,
-					"mdss_dp_hpd_tlmm");
-		if (!IS_ERR_OR_NULL(pinctrl->state_hpd_tlmm)) {
-			pinctrl->state_hpd_ctrl = pinctrl_lookup_state(
-				pinctrl->pin, "mdss_dp_hpd_ctrl");
-		}
-
-		if (!pinctrl->state_hpd_tlmm || !pinctrl->state_hpd_ctrl) {
-			pinctrl->state_hpd_tlmm = NULL;
-			pinctrl->state_hpd_ctrl = NULL;
-			DP_DEBUG("tlmm or ctrl pinctrl state does not exist\n");
-		}
-	}
-
 	pinctrl->state_active = pinctrl_lookup_state(pinctrl->pin,
 					"mdss_dp_active");
 	if (IS_ERR_OR_NULL(pinctrl->state_active)) {
@@ -264,13 +239,6 @@ static int dp_parser_gpio(struct dp_parser *parser)
 		"qcom,aux-sel-gpio",
 		"qcom,usbplug-cc-gpio",
 	};
-
-	if (of_find_property(of_node, "qcom,dp-hpd-gpio", NULL)) {
-		parser->no_aux_switch = true;
-		parser->lphw_hpd = of_find_property(of_node,
-				"qcom,dp-low-power-hw-hpd", NULL);
-		return 0;
-	}
 
 	if (of_find_property(of_node, "qcom,dp-gpio-aux-switch", NULL))
 		parser->gpio_aux_switch = true;
@@ -733,12 +701,6 @@ static int dp_parser_mst(struct dp_parser *parser)
 		of_property_read_u32_index(dev->of_node,
 				"qcom,mst-fixed-topology-ports", i,
 				&parser->mst_fixed_port[i]);
-		of_property_read_string_index(
-				dev->of_node,
-				"qcom,mst-fixed-topology-display-types", i,
-				&parser->mst_fixed_display_type[i]);
-		if (!parser->mst_fixed_display_type[i])
-			parser->mst_fixed_display_type[i] = "unknown";
 	}
 
 	return 0;
@@ -777,7 +739,7 @@ static void dp_parser_qos(struct dp_parser *parser)
 	parser->qos_cpu_mask = mask;
 	parser->qos_cpu_latency = latency;
 
-	DP_DEBUG("qos parsing successful. mask:%x latency:%ld\n", mask, latency);
+	DP_DEBUG("qos parsing successful. mask:%x latency:%u\n", mask, latency);
 }
 
 static void dp_parser_fec(struct dp_parser *parser)
@@ -800,14 +762,6 @@ static void dp_parser_widebus(struct dp_parser *parser)
 
 	DP_DEBUG("widebus parsing successful. widebus:%d\n",
 			parser->has_widebus);
-}
-
-static int dp_parser_typec_bridge(struct dp_parser *parser)
-{
-        struct device *dev = &parser->pdev->dev;
-        parser->typec_bridge = of_property_read_bool(dev->of_node,
-                        "altmode-typec-bridge");
-        return 0;
 }
 
 static int dp_parser_parse(struct dp_parser *parser)
@@ -859,8 +813,6 @@ static int dp_parser_parse(struct dp_parser *parser)
 	rc = dp_parser_mst(parser);
 	if (rc)
 		goto err;
-	/* no need to check rc */
-	rc = dp_parser_typec_bridge(parser);
 
 	dp_parser_dsc(parser);
 	dp_parser_fec(parser);

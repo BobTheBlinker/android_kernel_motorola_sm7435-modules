@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -27,14 +28,14 @@ struct sde_format_extended;
  * @blk_off:      pipe offset relative to mdss offset
  * @length        length of register block offset
  * @xin_id        xin id
- * @hwversion     mdss hw version number
+ * @hw_rev     mdss hw revision
  */
 struct sde_hw_blk_reg_map {
 	void __iomem *base_off;
 	u32 blk_off;
 	u32 length;
 	u32 xin_id;
-	u32 hwversion;
+	u32 hw_rev;
 	u32 log_mask;
 };
 
@@ -77,6 +78,8 @@ struct sde_hw_scaler3_de_cfg {
  * struct sde_hw_scaler3_cfg : QSEEDv3 configuration
  * @enable:        scaler enable
  * @dir_en:        direction detection block enable
+ * @dir45_en:      45/-45 degree direction filtering block enable
+ * @cor_en:        corner detection block enable
  * @ init_phase_x: horizontal initial phase
  * @ phase_step_x: horizontal phase step
  * @ init_phase_y: vertical initial phase
@@ -109,10 +112,16 @@ struct sde_hw_scaler3_de_cfg {
  * @ de: detail enhancer configuration
  * @ dir_weight:   Directional Weight
  * @dyn_exp_disabled:     Dynamic expansion disabled
+ * @de_lpf_flags:      Detail enhancer lpf blned configuration flags
+ * @de_lpf_h:          Detail enhancer lpf blend high
+ * @de_lpf_l:          Detail enhancer lpf blend low
+ * @de_lpf_m:          Detail enhancer lpf blend medium
  */
 struct sde_hw_scaler3_cfg {
 	u32 enable;
 	u32 dir_en;
+	u32 dir45_en;
+	u32 cor_en;
 	int32_t init_phase_x[SDE_MAX_PLANES];
 	int32_t phase_step_x[SDE_MAX_PLANES];
 	int32_t init_phase_y[SDE_MAX_PLANES];
@@ -151,6 +160,11 @@ struct sde_hw_scaler3_cfg {
 	struct sde_hw_scaler3_de_cfg de;
 	uint32_t dir_weight;
 	uint32_t dyn_exp_disabled;
+
+	__u32 de_lpf_flags;
+	__u32 de_lpf_h;
+	__u32 de_lpf_l;
+	__u32 de_lpf_m;
 };
 
 struct sde_hw_scaler3_lut_cfg {
@@ -197,7 +211,7 @@ void sde_set_scaler_v2(struct sde_hw_scaler3_cfg *cfg,
 
 void sde_hw_setup_scaler3(struct sde_hw_blk_reg_map *c,
 		struct sde_hw_scaler3_cfg *scaler3_cfg, u32 scaler_version,
-		u32 scaler_offset, const struct sde_format *format);
+		u32 scaler_offset, const struct sde_format *format, bool de_lpf);
 
 void sde_hw_csc_matrix_coeff_setup(struct sde_hw_blk_reg_map *c,
 		u32 csc_reg_off, struct sde_csc_cfg *data,

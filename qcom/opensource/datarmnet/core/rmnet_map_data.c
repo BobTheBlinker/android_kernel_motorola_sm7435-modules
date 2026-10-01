@@ -1,5 +1,5 @@
 /* Copyright (c) 2013-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -23,10 +23,12 @@
 #include "rmnet_private.h"
 #include "rmnet_handlers.h"
 #include "rmnet_ll.h"
+#include "rmnet_mem.h"
 
 #define RMNET_MAP_PKT_COPY_THRESHOLD 64
 #define RMNET_MAP_DEAGGR_SPACING  64
 #define RMNET_MAP_DEAGGR_HEADROOM (RMNET_MAP_DEAGGR_SPACING / 2)
+#define RMNET_PAGE_COUNT 384
 
 struct rmnet_map_coal_metadata {
 	void *ip_header;
@@ -384,8 +386,16 @@ struct sk_buff *rmnet_map_deaggregate(struct sk_buff *skb,
 		if (!skbn)
 			return NULL;
 
-		skb_append_pagefrags(skbn, page, frag0->bv_offset,
-				     packet_len);
+#if (KERNEL_VERSION(6, 5, 0) > LINUX_VERSION_CODE)
+		/* Needed kernel version check for compatibility */
+		skb_append_pagefrags(skbn, page, frag0->bv_offset, packet_len);
+#elif (KERNEL_VERSION(6, 9, 0) > LINUX_VERSION_CODE)
+		skb_append_pagefrags(skbn, page, frag0->bv_offset, packet_len,
+				     MAX_SKB_FRAGS);
+#else
+		skb_append_pagefrags(skbn, page, frag0->offset, packet_len,
+				     MAX_SKB_FRAGS);
+#endif
 		skbn->data_len += packet_len;
 		skbn->len += packet_len;
 	} else {
@@ -674,11 +684,26 @@ static void rmnet_map_nonlinear_copy(struct sk_buff *coal_skb,
 		skb_frag_t *frag0 = skb_shinfo(coal_skb)->frags;
 		struct page *page = skb_frag_page(frag0);
 
+#if (KERNEL_VERSION(6, 5, 0) > LINUX_VERSION_CODE)
+		/* Needed kernel version check for compatibility */
 		skb_append_pagefrags(dest, page,
 				     frag0->bv_offset + coal_meta->ip_len +
 				     coal_meta->trans_len +
 				     coal_meta->data_offset,
 				     copy_len);
+#elif (KERNEL_VERSION(6, 9, 0) > LINUX_VERSION_CODE)
+		skb_append_pagefrags(dest, page,
+				     frag0->bv_offset + coal_meta->ip_len +
+				     coal_meta->trans_len +
+				     coal_meta->data_offset,
+				     copy_len, MAX_SKB_FRAGS);
+#else
+		skb_append_pagefrags(dest, page,
+				     frag0->offset + coal_meta->ip_len +
+				     coal_meta->trans_len +
+				     coal_meta->data_offset,
+				     copy_len, MAX_SKB_FRAGS);
+#endif
 		dest->data_len += copy_len;
 		dest->len += copy_len;
 	} else {
@@ -1332,7 +1357,7 @@ static void rmnet_free_agg_pages(struct rmnet_aggregation_state *state)
 
 	list_for_each_entry_safe(agg_page, idx, &state->agg_list, list) {
 		list_del(&agg_page->list);
-		put_page(agg_page->page);
+		rmnet_mem_put_page_entry(agg_page->page);
 		kfree(agg_page);
 	}
 
@@ -1344,6 +1369,8 @@ static struct page *rmnet_get_agg_pages(struct rmnet_aggregation_state *state)
 	struct rmnet_agg_page *agg_page;
 	struct page *page = NULL;
 	int i = 0;
+	int rc;
+	int pageorder = 2;
 
 	if (!(state->params.agg_features & RMNET_PAGE_RECYCLE))
 		goto alloc;
@@ -1368,7 +1395,9 @@ static struct page *rmnet_get_agg_pages(struct rmnet_aggregation_state *state)
 
 alloc:
 	if (!page) {
-		page =  __dev_alloc_pages(GFP_ATOMIC, state->agg_size_order);
+		page = rmnet_mem_get_pages_entry(GFP_ATOMIC, state->agg_size_order, &rc,
+						 &pageorder, RMNET_CORE_ID);
+
 		state->stats->ul_agg_alloc++;
 	}
 
@@ -1380,12 +1409,16 @@ __rmnet_alloc_agg_pages(struct rmnet_aggregation_state *state)
 {
 	struct rmnet_agg_page *agg_page;
 	struct page *page;
+	int rc;
+	int pageorder = 2;
 
 	agg_page = kzalloc(sizeof(*agg_page), GFP_ATOMIC);
 	if (!agg_page)
 		return NULL;
 
-	page = __dev_alloc_pages(GFP_ATOMIC, state->agg_size_order);
+	page = rmnet_mem_get_pages_entry(GFP_ATOMIC, state->agg_size_order, &rc,
+					 &pageorder, RMNET_CORE_ID);
+
 	if (!page) {
 		kfree(agg_page);
 		return NULL;
@@ -1402,7 +1435,7 @@ static void rmnet_alloc_agg_pages(struct rmnet_aggregation_state *state)
 	struct rmnet_agg_page *agg_page = NULL;
 	int i = 0;
 
-	for (i = 0; i < 512; i++) {
+	for (i = 0; i < RMNET_PAGE_COUNT; i++) {
 		agg_page = __rmnet_alloc_agg_pages(state);
 
 		if (agg_page)
@@ -1513,7 +1546,7 @@ new_packet:
 		state->agg_skb->protocol = htons(ETH_P_MAP);
 		state->agg_count = 1;
 		ktime_get_real_ts64(&state->agg_time);
-		dev_kfree_skb_any(skb);
+		dev_consume_skb_any(skb);
 		goto schedule;
 	}
 	diff = timespec64_sub(state->agg_last, state->agg_time);
@@ -1528,7 +1561,7 @@ new_packet:
 
 	rmnet_map_linearize_copy(state->agg_skb, skb);
 	state->agg_count++;
-	dev_kfree_skb_any(skb);
+	dev_consume_skb_any(skb);
 
 schedule:
 	if (state->agg_state != -EINPROGRESS) {

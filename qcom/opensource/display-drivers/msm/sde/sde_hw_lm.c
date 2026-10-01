@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
+#define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 #include <linux/iopoll.h>
 
 #include "sde_kms.h"
@@ -12,6 +14,7 @@
 #include "sde_hw_mdss.h"
 #include "sde_dbg.h"
 #include "sde_kms.h"
+#include "sde_hw_util.h"
 
 #define LM_OP_MODE                        0x00
 #define LM_OUT_SIZE                       0x04
@@ -45,7 +48,7 @@ static struct sde_lm_cfg *_lm_offset(enum sde_lm mixer,
 			b->base_off = addr;
 			b->blk_off = m->mixer[i].base;
 			b->length = m->mixer[i].len;
-			b->hwversion = m->hwversion;
+			b->hw_rev = m->hw_rev;
 			b->log_mask = SDE_DBG_MASK_LM;
 			return &m->mixer[i];
 		}
@@ -255,6 +258,7 @@ static int sde_hw_lm_collect_misr(struct sde_hw_mixer *ctx, bool nonblock,
 {
 	struct sde_hw_blk_reg_map *c = &ctx->hw;
 	u32 ctrl = 0;
+	int rc = 0;
 
 	if (!misr_value)
 		return -EINVAL;
@@ -262,12 +266,8 @@ static int sde_hw_lm_collect_misr(struct sde_hw_mixer *ctx, bool nonblock,
 	ctrl = SDE_REG_READ(c, LM_MISR_CTRL);
 	if (!nonblock) {
 		if (ctrl & MISR_CTRL_ENABLE) {
-			int rc;
-
-			rc = readl_poll_timeout(c->base_off + c->blk_off +
-					LM_MISR_CTRL, ctrl,
-					(ctrl & MISR_CTRL_STATUS) > 0, 500,
-					84000);
+			rc = read_poll_timeout(sde_reg_read, ctrl, (ctrl & MISR_CTRL_STATUS) > 0,
+					500, false, 84000, c, LM_MISR_CTRL);
 			if (rc)
 				return rc;
 		} else {
@@ -277,7 +277,7 @@ static int sde_hw_lm_collect_misr(struct sde_hw_mixer *ctx, bool nonblock,
 
 	*misr_value  = SDE_REG_READ(c, LM_MISR_SIGNATURE);
 
-	return 0;
+	return rc;
 }
 
 static void sde_hw_clear_noise_layer(struct sde_hw_mixer *ctx)
@@ -400,18 +400,12 @@ static void _setup_mixer_ops(struct sde_mdss_cfg *m,
 		ops->setup_noise_layer = sde_hw_lm_setup_noise_layer;
 };
 
-static struct sde_hw_blk_ops sde_hw_ops = {
-	.start = NULL,
-	.stop = NULL,
-};
-
-struct sde_hw_mixer *sde_hw_lm_init(enum sde_lm idx,
+struct sde_hw_blk_reg_map *sde_hw_lm_init(enum sde_lm idx,
 		void __iomem *addr,
 		struct sde_mdss_cfg *m)
 {
 	struct sde_hw_mixer *c;
 	struct sde_lm_cfg *cfg;
-	int rc;
 
 	c = kzalloc(sizeof(*c), GFP_KERNEL);
 	if (!c)
@@ -427,32 +421,21 @@ struct sde_hw_mixer *sde_hw_lm_init(enum sde_lm idx,
 	c->idx = idx;
 	c->cap = cfg;
 
-	rc = sde_hw_blk_init(&c->base, SDE_HW_BLK_LM, idx, &sde_hw_ops);
-	if (rc) {
-		SDE_ERROR("failed to init hw blk %d\n", rc);
-		goto blk_init_error;
-	}
-
-	/* Dummy mixers should not setup ops and not be added to dump range */
+	/* Dummy mixers should not setup ops nor add to dump ranges */
 	if (cfg->dummy_mixer)
-		return c;
+		goto done;
 
 	_setup_mixer_ops(m, &c->ops, c->cap->features);
 
 	sde_dbg_reg_register_dump_range(SDE_DBG_NAME, cfg->name, c->hw.blk_off,
 			c->hw.blk_off + c->hw.length, c->hw.xin_id);
 
-	return c;
-
-blk_init_error:
-	kfree(c);
-
-	return ERR_PTR(rc);
+done:
+	return &c->hw;
 }
 
-void sde_hw_lm_destroy(struct sde_hw_mixer *lm)
+void sde_hw_lm_destroy(struct sde_hw_blk_reg_map *hw)
 {
-	if (lm)
-		sde_hw_blk_destroy(&lm->base);
-	kfree(lm);
+	if (hw)
+		kfree(to_sde_hw_mixer(hw));
 }

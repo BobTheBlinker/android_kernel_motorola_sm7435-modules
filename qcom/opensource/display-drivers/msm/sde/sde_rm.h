@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -113,6 +114,8 @@ enum sde_rm_topology_group {
  * @SDE_RM_TOPCTL_DS  : Require layer mixers with DS capabilities
  * @SDE_RM_TOPCTL_CWB  : Require layer mixers with CWB capabilities
  * @SDE_RM_TOPCTL_DCWB : Require layer mixers with DCWB capabilities
+ * @SDE_RM_TOPCTL_DNSC_BLUR : Require writeback with downscale blur capabilities
+ * @SDE_RM_TOPCTL_CDM : Require writeback with CDM capabilities
  */
 enum sde_rm_topology_control {
 	SDE_RM_TOPCTL_RESERVE_LOCK,
@@ -121,6 +124,8 @@ enum sde_rm_topology_control {
 	SDE_RM_TOPCTL_DS,
 	SDE_RM_TOPCTL_CWB,
 	SDE_RM_TOPCTL_DCWB,
+	SDE_RM_TOPCTL_DNSC_BLUR,
+	SDE_RM_TOPCTL_CDM,
 };
 
 /**
@@ -196,7 +201,7 @@ struct sde_rm_hw_blk;
  * @type: Hardware Block Type client wishes to search for.
  */
 struct sde_rm_hw_iter {
-	void *hw;
+	struct sde_hw_blk_reg_map *hw;
 	struct sde_rm_hw_blk *blk;
 	uint32_t enc_id;
 	enum sde_hw_blk_type type;
@@ -209,7 +214,7 @@ struct sde_rm_hw_iter {
  * @id: Hardware block id
  */
 struct sde_rm_hw_request {
-	void *hw;
+	struct sde_hw_blk_reg_map *hw;
 	enum sde_hw_blk_type type;
 	int id;
 };
@@ -234,15 +239,9 @@ void sde_rm_debugfs_init(struct sde_rm *rm, struct dentry *parent);
  * sde_rm_init - Read hardware catalog and create reservation tracking objects
  *	for all HW blocks.
  * @rm: SDE Resource Manager handle
- * @cat: Pointer to hardware catalog
- * @mmio: mapped register io address of MDP
- * @dev: device handle for event logging purposes
  * @Return: 0 on Success otherwise -ERROR
  */
-int sde_rm_init(struct sde_rm *rm,
-		struct sde_mdss_cfg *cat,
-		void __iomem *mmio,
-		struct drm_device *dev);
+int sde_rm_init(struct sde_rm *rm);
 
 /**
  * sde_rm_destroy - Free all memory allocated by sde_rm_init
@@ -404,16 +403,6 @@ static inline int sde_rm_topology_get_num_lm(struct sde_rm *rm,
 bool sde_rm_topology_is_group(struct sde_rm *rm,
 		struct drm_crtc_state *state,
 		enum sde_rm_topology_group group);
-
-/**
- * sde_rm_ext_blk_destroy - Given the encoder for the display chain, release
- *	external HW blocks created for that.
- * @rm: SDE Resource Manager handle
- * @enc: DRM Encoder handle
- * @Return: 0 on Success otherwise -ERROR
- */
-int sde_rm_ext_blk_destroy(struct sde_rm *rm,
-				struct drm_encoder *enc);
 
 /**
  * sde_rm_get_resource_info - returns avail hw resource info

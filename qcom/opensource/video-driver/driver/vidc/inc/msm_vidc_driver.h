@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _MSM_VIDC_DRIVER_H_
@@ -257,11 +257,6 @@ static inline bool is_secure_region(enum msm_vidc_buffer_region region)
 			region == MSM_VIDC_NON_SECURE_PIXEL);
 }
 
-static inline bool is_internal_alloc_enabled(struct msm_vidc_inst *inst)
-{
-	return !!(inst->capabilities->cap[ALLOC_INTERNAL].value);
-}
-
 const char *cap_name(enum msm_vidc_inst_capability_type cap);
 const char *v4l2_pixelfmt_name(u32 pixelfmt);
 const char *v4l2_type_name(u32 port);
@@ -417,7 +412,7 @@ int msm_vidc_state_change_last_flag(struct msm_vidc_inst *inst);
 int msm_vidc_get_mbs_per_frame(struct msm_vidc_inst *inst);
 int msm_vidc_get_fps(struct msm_vidc_inst *inst);
 int msm_vidc_num_buffers(struct msm_vidc_inst *inst,
-	enum msm_vidc_buffer_type type, enum msm_vidc_buffer_attributes attr);
+enum msm_vidc_buffer_type type, enum msm_vidc_buffer_attributes attr);
 void core_lock(struct msm_vidc_core *core, const char *function);
 void core_unlock(struct msm_vidc_core *core, const char *function);
 bool core_lock_check(struct msm_vidc_core *core, const char *function);

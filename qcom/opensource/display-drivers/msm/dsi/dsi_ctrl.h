@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -232,8 +232,8 @@ struct dsi_ctrl_interrupts {
  * @frame_threshold_time_us: Frame threshold time in microseconds, where
  *		 	  dsi data lane will be idle i.e from pingpong done to
  *			  next TE for command mode.
- * @phy_isolation_enabled:    A boolean property allows to isolate the phy from
- *                          dsi controller and run only dsi controller.
+ * @phy_pll_bypass:      A boolean property that enables skipping HW access in
+ *                       DSI PHY/PLL drivers for running on emulation platforms.
  * @null_insertion_enabled:  A boolean property to allow dsi controller to
  *                           insert null packet.
  * @modeupdated:	  Boolean to send new roi if mode is updated.
@@ -243,6 +243,8 @@ struct dsi_ctrl_interrupts {
  *				count.
  * @cmd_mode:			Boolean to indicate if panel is running in
  *				command mode.
+ * @dsi_ctrl_shared:		Boolean to indicate if ctrl is shared between
+ *				dual displays.
  * @cmd_trigger_line:		unsigned integer that indicates the line at
  *				which command gets triggered.
  * @cmd_trigger_frame:		unsigned integer that indicates the frame at
@@ -253,6 +255,7 @@ struct dsi_ctrl_interrupts {
  *				which command transfer is successful.
  * @cmd_engine_refcount: Reference count enforcing single instance of cmd engine
  * @pending_cmd_flags: Flags associated with command that is currently being txed or pending.
+ * @cmd_success_ts:             Time stamp of when command transfer is successful in nano-seconds.
  */
 struct dsi_ctrl {
 	struct platform_device *pdev;
@@ -309,23 +312,20 @@ struct dsi_ctrl {
 	unsigned long jiffies_start;
 	unsigned int error_interrupt_count;
 
-	bool phy_isolation_enabled;
+	bool phy_pll_bypass;
 	bool null_insertion_enabled;
 	bool modeupdated;
 	bool split_link_supported;
 	bool enable_cmd_dma_stats;
 	bool cmd_mode;
+	bool dsi_ctrl_shared;
 	u32 cmd_trigger_line;
 	u32 cmd_trigger_frame;
-	atomic_t cmd_success_line;
-	atomic_t cmd_success_frame;
+	u32 cmd_success_line;
+	u32 cmd_success_frame;
 	u32 cmd_engine_refcount;
 	u32 pending_cmd_flags;
-	atomic64_t cmd_success_ts;
-	u32 refcount_non_zero;
-
-	// Motorola zhanggb, print MIPI command log when enable
-	u32 mipi_cmd_log_en;
+	ktime_t cmd_success_ts;
 };
 
 /**
@@ -417,13 +417,14 @@ int dsi_ctrl_update_host_config(struct dsi_ctrl *dsi_ctrl,
  * dsi_ctrl_timing_db_update() - update only controller Timing DB
  * @dsi_ctrl:          DSI controller handle.
  * @enable:            Enable/disable Timing DB register
+ * @pf_time_in_us:           Programmable fetch time in micro-seconds
  *
  * Update timing db register value during dfps usecases
  *
  * Return: error code.
  */
 int dsi_ctrl_timing_db_update(struct dsi_ctrl *dsi_ctrl,
-		bool enable);
+		bool enable, u32 pf_time_in_us);
 
 /**
  * dsi_ctrl_async_timing_update() - update only controller timing
@@ -579,13 +580,28 @@ int dsi_ctrl_set_roi(struct dsi_ctrl *dsi_ctrl, struct dsi_rect *roi,
  * dsi_ctrl_set_tpg_state() - enable/disable test pattern on the controller
  * @dsi_ctrl:          DSI controller handle.
  * @on:                enable/disable test pattern.
+ * @type:              type of test pattern to generate.
+ * @init_val:          seed value for generating test pattern.
+ * @pattern:           test pattern to generate.
  *
  * Test pattern can be enabled only after Video engine (for video mode panels)
  * or command engine (for cmd mode panels) is enabled.
  *
  * Return: error code.
  */
-int dsi_ctrl_set_tpg_state(struct dsi_ctrl *dsi_ctrl, bool on);
+int dsi_ctrl_set_tpg_state(struct dsi_ctrl *dsi_ctrl, bool on,
+		enum dsi_test_pattern type, u32 init_val,
+		enum dsi_ctrl_tpg_pattern pattern);
+
+/**
+ * dsi_ctrl_trigger_test_pattern() - trigger a command mode frame update with test pattern
+ * @dsi_ctrl:          DSI controller handle.
+ *
+ * Trigger a command mode frame update with chosen test pattern.
+ *
+ * Return: error code.
+ */
+int dsi_ctrl_trigger_test_pattern(struct dsi_ctrl *dsi_ctrl);
 
 /**
  * dsi_ctrl_transfer_prepare() - Set up a command transfer

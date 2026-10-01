@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -55,12 +55,11 @@
 /* below this fps limit, timeouts are adjusted based on fps */
 #define DEFAULT_TIMEOUT_FPS_THRESHOLD            24
 
-#define NUM_FSC_FIELDS 3
-#define PLANAR_RGB_PACKING 3
-#define GET_MODE_WIDTH(fsc_mode, mode) \
-	(fsc_mode ? mode->hdisplay / PLANAR_RGB_PACKING : mode->hdisplay)
-#define GET_MODE_HEIGHT(fsc_mode, mode) \
-	(fsc_mode ? mode->vdisplay * NUM_FSC_FIELDS : mode->vdisplay)
+#define SDE_ENC_IRQ_REGISTERED(phys_enc, idx) \
+		((!(phys_enc) || ((idx) < 0) || ((idx) >= INTR_IDX_MAX)) ? \
+		0 : ((phys_enc)->irq[(idx)].irq_idx >= 0))
+
+#define DEFAULT_MIN_FPS	10
 
 /**
  * Encoder functions and data types
@@ -112,6 +111,33 @@ enum sde_enc_rc_states {
 	SDE_ENC_RC_STATE_IDLE
 };
 
+/*
+ * enum sde_sim_qsync_frame - simulated QSYNC frame type
+ * @SDE_SIM_QSYNC_FRAME_NOMINAL: Frame is triggered early and TE must come at nominal frame rate.
+ * @SDE_SIM_QSYNC_FRAME_EARLY_OR_LATE: Frame could be triggered early or late and TE must adjust
+ *                                     accordingly.
+ * @SDE_SIM_QSYNC_FRAME_TIMEOUT: Frame is triggered too late and TE must adjust to the
+ *                               minimum QSYNC FPS.
+ */
+enum sde_sim_qsync_frame {
+	SDE_SIM_QSYNC_FRAME_NOMINAL,
+	SDE_SIM_QSYNC_FRAME_EARLY_OR_LATE,
+	SDE_SIM_QSYNC_FRAME_TIMEOUT
+};
+
+/*
+ * enum sde_sim_qsync_event - events that simulates a QSYNC panel
+ * @SDE_SIM_QSYNC_EVENT_FRAME_DETECTED: Event when DDIC is detecting a frame.
+ * @SDE_SIM_QSYNC_EVENT_TE_TRIGGER: Event when DDIC is triggering TE signal.
+ */
+enum sde_sim_qsync_event {
+	SDE_SIM_QSYNC_EVENT_FRAME_DETECTED,
+	SDE_SIM_QSYNC_EVENT_TE_TRIGGER
+};
+
+/* Frame rate value to trigger the watchdog TE in 200 us */
+#define SDE_SIM_QSYNC_IMMEDIATE_FPS 5000
+
 /**
  * struct sde_encoder_virt - virtual encoder. Container of one or more physical
  *	encoders. Virtual encoder manages one "logical" display. Physical
@@ -132,6 +158,7 @@ enum sde_enc_rc_states {
  *			pingpong blocks can be different than num_phys_encs.
  * @hw_dsc:		Array of DSC block handles used for the display.
  * @hw_vdc:		Array of VDC block handles used for the display.
+ * @cur_channel_cnt     Number of data channels currently used for the display
  * @dirty_dsc_ids:	Cached dsc indexes for dirty DSC blocks needing flush
  * @intfs_swapped	Whether or not the phys_enc interfaces have been swapped
  *			for partial update right-only cases, such as pingpong
@@ -158,6 +185,8 @@ enum sde_enc_rc_states {
  * @misr_frame_count:		misr frame count before start capturing the data
  * @idle_pc_enabled:		indicate if idle power collapse is enabled
  *				currently. This can be controlled by user-mode
+ * @restore_te_rd_ptr:          flag to indicate that te read pointer value must
+ *                              be restored after idle power collapse
  * @rc_lock:			resource control mutex lock to protect
  *				virt encoder over various state changes
  * @rc_state:			resource controller state
@@ -191,6 +220,9 @@ enum sde_enc_rc_states {
  *				next update is triggered.
  * @autorefresh_solver_disable	It tracks if solver state is disabled from this
  *				encoder due to autorefresh concurrency.
+ * @ctl_done_supported          boolean flag to indicate the availability of
+ *                              ctl done irq support for the hardware
+ * @dynamic_irqs_config         bitmask config to enable encoder dynamic irqs
  */
 struct sde_encoder_virt {
 	struct drm_encoder base;
@@ -212,6 +244,7 @@ struct sde_encoder_virt {
 	struct sde_hw_pingpong *hw_dsc_pp[MAX_CHANNELS_PER_ENC];
 	enum sde_dsc dirty_dsc_ids[MAX_CHANNELS_PER_ENC];
 	enum sde_vdc dirty_vdc_ids[MAX_CHANNELS_PER_ENC];
+	u32 cur_channel_cnt;
 	bool intfs_swapped;
 	bool qdss_status;
 
@@ -227,7 +260,7 @@ struct sde_encoder_virt {
 	struct sde_rsc_client *rsc_client;
 	bool rsc_state_init;
 	struct msm_display_info disp_info;
-	bool misr_enable;
+	atomic_t misr_enable;
 	bool misr_reconfigure;
 	u32 misr_frame_count;
 
@@ -242,6 +275,7 @@ struct sde_encoder_virt {
 	struct input_handler *input_handler;
 	bool vblank_enabled;
 	bool idle_pc_restore;
+	bool restore_te_rd_ptr;
 	enum frame_trigger_mode_type frame_trigger_mode;
 	bool dynamic_hdr_updated;
 
@@ -258,6 +292,9 @@ struct sde_encoder_virt {
 	struct msm_mode_info mode_info;
 	bool delay_kickoff;
 	bool autorefresh_solver_disable;
+	bool ctl_done_supported;
+
+	unsigned long dynamic_irqs_config;
 };
 
 #define to_sde_encoder_virt(x) container_of(x, struct sde_encoder_virt, base)
@@ -271,12 +308,6 @@ struct sde_encoder_virt {
 void sde_encoder_get_hw_resources(struct drm_encoder *encoder,
 		struct sde_encoder_hw_resources *hw_res,
 		struct drm_connector_state *conn_state);
-
-/**
- * sde_encoder_trigger_rsc_state_change - rsc state change.
- * @encoder:	encoder pointer
- */
-void sde_encoder_trigger_rsc_state_change(struct drm_encoder *drm_enc);
 
 /**
  * sde_encoder_early_wakeup - early wake up display
@@ -406,11 +437,10 @@ bool sde_encoder_get_vblank_timestamp(struct drm_encoder *encoder,
 		ktime_t *tvblank);
 
 /**
- * sde_encoder_control_te - control enabling/disabling VSYNC_IN_EN
+ * sde_encoder_idle_pc_enter - control enable/disable VSYNC_IN_EN & cache display status at ipc
  * @encoder:	encoder pointer
- * @enable:	boolean to indicate enable/disable
  */
-void sde_encoder_control_te(struct drm_encoder *encoder, bool enable);
+void sde_encoder_idle_pc_enter(struct drm_encoder *encoder);
 
 /**
  * sde_encoder_virt_restore - restore the encoder configs
@@ -543,6 +573,19 @@ bool sde_encoder_is_primary_display(struct drm_encoder *enc);
 bool sde_encoder_is_built_in_display(struct drm_encoder *enc);
 
 /**
+ * sde_encoder_check_ctl_done_support - checks if ctl_done irq is available
+ *		for the display
+ * @drm_enc:    Pointer to drm encoder structure
+ * @Return:     true if scheduler update is enabled
+ */
+static inline bool sde_encoder_check_ctl_done_support(struct drm_encoder *drm_enc)
+{
+	struct sde_encoder_virt *sde_enc = to_sde_encoder_virt(drm_enc);
+
+	return sde_enc && sde_enc->ctl_done_supported;
+}
+
+/**
  * sde_encoder_is_dsi_display - checks if underlying display is DSI
  *     display or not.
  * @drm_enc:    Pointer to drm encoder structure
@@ -605,6 +648,13 @@ bool sde_encoder_needs_dsc_disable(struct drm_encoder *drm_enc);
  */
 void sde_encoder_get_transfer_time(struct drm_encoder *drm_enc,
 		u32 *transfer_time_us);
+
+/**
+ * sde_encoder_helper_update_out_fence_txq - updates hw-fence tx queue
+ * @sde_enc: Pointer to sde encoder structure
+ * @is_vid: Boolean to indicate if is video-mode
+ */
+void sde_encoder_helper_update_out_fence_txq(struct sde_encoder_virt *sde_enc, bool is_vid);
 
 /*
  * sde_encoder_get_dfps_maxfps - get dynamic FPS max frame rate of
@@ -682,5 +732,61 @@ static inline bool sde_encoder_is_widebus_enabled(struct drm_encoder *drm_enc)
 	return sde_enc->mode_info.wide_bus_en;
 }
 
+/*
+ * sde_encoder_is_line_insertion_supported - get line insertion
+ * feature bit value from panel
+ * @drm_enc:    Pointer to drm encoder structure
+ * @Return: line insertion support status
+ */
+bool sde_encoder_is_line_insertion_supported(struct drm_encoder *drm_enc);
+
+/**
+ * sde_encoder_get_hw_ctl - gets hw ctl from the connector
+ * @c_conn: sde connector
+ * @Return: pointer to the hw ctl from the encoder upon success, otherwise null
+ */
+struct sde_hw_ctl *sde_encoder_get_hw_ctl(struct sde_connector *c_conn);
+
+/*
+ * sde_encoder_get_programmed_fetch_time - gets the programmable fetch time for video encoders
+ * @drm_enc:    Pointer to drm encoder structure
+ * @Return: programmable fetch time in microseconds
+ */
+u32 sde_encoder_get_programmed_fetch_time(struct drm_encoder *encoder);
+
 void sde_encoder_add_data_to_minidump_va(struct drm_encoder *drm_enc);
+
+/**
+ * sde_encoder_misr_sign_event_notify - collect MISR, check with previous value
+ * if change then notify to client with custom event
+ * @drm_enc: pointer to drm encoder
+ */
+void sde_encoder_misr_sign_event_notify(struct drm_encoder *drm_enc);
+
+/**
+ * sde_encoder_register_misr_event - register or deregister MISR event
+ * @drm_enc: pointer to drm encoder
+ * @val: indicates register or deregister
+ */
+static inline int sde_encoder_register_misr_event(struct drm_encoder *drm_enc, bool val)
+{
+	struct sde_encoder_virt *sde_enc = NULL;
+
+	if (!drm_enc)
+		return -EINVAL;
+
+	sde_enc = to_sde_encoder_virt(drm_enc);
+	atomic_set(&sde_enc->misr_enable, val);
+
+	/*
+	 * To setup MISR ctl reg, set misr_reconfigure as true.
+	 * MISR is calculated for the specific number of frames.
+	 */
+	if (atomic_read(&sde_enc->misr_enable)) {
+		sde_enc->misr_reconfigure = true;
+		sde_enc->misr_frame_count = 1;
+	}
+
+	return 0;
+}
 #endif /* __SDE_ENCODER_H__ */

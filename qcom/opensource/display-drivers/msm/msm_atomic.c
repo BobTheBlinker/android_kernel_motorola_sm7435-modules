@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2014 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -18,12 +18,16 @@
  */
 #include <drm/drm_panel.h>
 #include <drm/drm_vblank.h>
+#include <linux/version.h>
 
 #include "msm_drv.h"
 #include "msm_gem.h"
 #include "msm_kms.h"
 #include "sde_trace.h"
 #include <drm/drm_atomic_uapi.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+#include <linux/dma-fence-chain.h>
+#endif
 
 #define MULTIPLE_CONN_DETECTED(x) (x > 1)
 
@@ -233,7 +237,12 @@ msm_disable_outputs(struct drm_device *dev, struct drm_atomic_state *old_state)
 		 * it away), so we won't call disable hooks twice.
 		 */
 		bridge = drm_bridge_chain_get_first_bridge(encoder);
+
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+		drm_atomic_bridge_chain_disable(bridge, old_state);
+#else
 		drm_bridge_chain_disable(bridge);
+#endif
 
 		/* Right function depends upon target state. */
 		if (connector->state->crtc && funcs->prepare)
@@ -243,7 +252,11 @@ msm_disable_outputs(struct drm_device *dev, struct drm_atomic_state *old_state)
 		else
 			funcs->dpms(encoder, DRM_MODE_DPMS_OFF);
 
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+		drm_atomic_bridge_chain_post_disable(bridge, old_state);
+#else
 		drm_bridge_chain_post_disable(bridge);
+#endif
 	}
 
 	for_each_old_crtc_in_state(old_state, crtc, old_crtc_state, i) {
@@ -257,7 +270,8 @@ msm_disable_outputs(struct drm_device *dev, struct drm_atomic_state *old_state)
 		if (!old_crtc_state->active)
 			continue;
 
-		if (_msm_seamless_for_crtc(old_state, crtc->state, false))
+		if (!crtc->state->active_changed &&
+				_msm_seamless_for_crtc(old_state, crtc->state, false))
 			continue;
 
 		funcs = crtc->helper_private;
@@ -414,7 +428,8 @@ static void msm_atomic_helper_commit_modeset_enables(struct drm_device *dev,
 		if (!new_crtc_state->active)
 			continue;
 
-		if (_msm_seamless_for_crtc(old_state, crtc->state, true))
+		if (!crtc->state->active_changed &&
+				_msm_seamless_for_crtc(old_state, crtc->state, true))
 			continue;
 
 		funcs = crtc->helper_private;
@@ -424,7 +439,11 @@ static void msm_atomic_helper_commit_modeset_enables(struct drm_device *dev,
 					 crtc->base.id);
 
 			if (funcs->atomic_enable)
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+				funcs->atomic_enable(crtc, old_state);
+#else
 				funcs->atomic_enable(crtc, old_crtc_state);
+#endif
 			else
 				funcs->commit(crtc);
 		}
@@ -462,19 +481,8 @@ static void msm_atomic_helper_commit_modeset_enables(struct drm_device *dev,
 		if (_msm_seamless_for_conn(connector, old_conn_state, true))
 			continue;
 
-		if (!connector->state->best_encoder ||
-			!connector->state->best_encoder->helper_private){
-			DRM_WARN("connector->state->best_encoder helper_private NULL\n");
-			continue;
-		}
-
 		encoder = connector->state->best_encoder;
 		funcs = encoder->helper_private;
-
-		if (!encoder->name){
-			DRM_WARN("encoder->name NULL\n");
-			continue;
-		}
 
 		DRM_DEBUG_ATOMIC("enabling [ENCODER:%d:%s]\n",
 				 encoder->base.id, encoder->name);
@@ -484,7 +492,13 @@ static void msm_atomic_helper_commit_modeset_enables(struct drm_device *dev,
 		 * it away), so we won't call enable hooks twice.
 		 */
 		bridge = drm_bridge_chain_get_first_bridge(encoder);
+
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+		drm_atomic_bridge_chain_pre_enable(bridge, old_state);
+#else
 		drm_bridge_chain_pre_enable(bridge);
+#endif
+
 		++bridge_enable_count;
 
 		if (funcs->enable)
@@ -523,26 +537,60 @@ static void msm_atomic_helper_commit_modeset_enables(struct drm_device *dev,
 		if (_msm_seamless_for_conn(connector, old_conn_state, true))
 			continue;
 
-		if (!connector->state->best_encoder){
-			DRM_WARN("connector->state->best_encoder NULL\n");
-			continue;
-		}
-
 		encoder = connector->state->best_encoder;
-
-		if (!encoder->name){
-			DRM_WARN("encoder->name NULL\n");
-			continue;
-		}
 
 		DRM_DEBUG_ATOMIC("bridge enable enabling [ENCODER:%d:%s]\n",
 				 encoder->base.id, encoder->name);
 
 		bridge = drm_bridge_chain_get_first_bridge(encoder);
+
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+		drm_atomic_bridge_chain_enable(bridge, old_state);
+#else
 		drm_bridge_chain_enable(bridge);
+#endif
 	}
 	SDE_ATRACE_END("msm_enable");
 }
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+struct dma_fence *msm_dma_resv_get_excl(struct drm_plane_state *new_plane_state,
+		struct msm_gem_object *msm_obj)
+{
+	enum dma_resv_usage usage;
+	struct dma_fence *fence;
+	struct dma_fence *new;
+	int ret;
+
+	if (!msm_obj)
+		return NULL;
+
+	fence = dma_fence_get(new_plane_state->fence);
+	usage = fence ? DMA_RESV_USAGE_KERNEL : DMA_RESV_USAGE_WRITE;
+
+	ret = dma_resv_get_singleton(msm_obj->resv, usage, &new);
+	if (ret)
+		goto error;
+
+	if (new && fence) {
+		struct dma_fence_chain *chain = dma_fence_chain_alloc();
+
+		if (!chain) {
+			ret = -ENOMEM;
+			goto error;
+		}
+
+		dma_fence_chain_init(chain, fence, new, 1);
+		fence = &chain->base;
+	} else if (new) {
+		fence = new;
+	}
+
+error:
+	dma_fence_put(fence);
+	return NULL;
+}
+#endif
 
 int msm_atomic_prepare_fb(struct drm_plane *plane,
 			  struct drm_plane_state *new_state)
@@ -552,15 +600,31 @@ int msm_atomic_prepare_fb(struct drm_plane *plane,
 	struct drm_gem_object *obj;
 	struct msm_gem_object *msm_obj;
 	struct dma_fence *fence;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+	int i;
+#endif
 
 	if (!new_state->fb)
 		return 0;
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+	for (i = 0; i < new_state->fb->format->num_planes; ++i) {
+		obj = msm_framebuffer_bo(new_state->fb, i);
+		msm_obj = to_msm_bo(obj);
+		fence = msm_dma_resv_get_excl(new_state, msm_obj);
+		dma_fence_put(new_state->fence);
+		new_state->fence = fence;
+	}
+#else
 	obj = msm_framebuffer_bo(new_state->fb, 0);
 	msm_obj = to_msm_bo(obj);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	fence = dma_resv_get_excl_unlocked(msm_obj->resv);
+#else
 	fence = dma_resv_get_excl_rcu(msm_obj->resv);
-
+#endif
 	drm_atomic_set_fence_for_plane(new_state, fence);
+#endif
 
 	return msm_framebuffer_prepare(new_state->fb, kms->aspace);
 }
@@ -762,13 +826,31 @@ int msm_atomic_commit(struct drm_device *dev,
 			new_plane_state, i) {
 		if ((new_plane_state->fb != old_plane_state->fb)
 				&& new_plane_state->fb) {
-			struct drm_gem_object *obj =
-				msm_framebuffer_bo(new_plane_state->fb, 0);
-			struct msm_gem_object *msm_obj = to_msm_bo(obj);
-			struct dma_fence *fence =
+			struct drm_gem_object *obj;
+			struct msm_gem_object *msm_obj;
+			struct dma_fence *fence;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+			int j;
+
+			for (j = 0; j < new_plane_state->fb->format->num_planes; ++j) {
+				obj = msm_framebuffer_bo(new_plane_state->fb, j);
+				msm_obj = to_msm_bo(obj);
+				fence = msm_dma_resv_get_excl(new_plane_state, msm_obj);
+				dma_fence_put(new_plane_state->fence);
+				new_plane_state->fence = fence;
+			}
+#else
+			obj = msm_framebuffer_bo(new_plane_state->fb, 0);
+			msm_obj = to_msm_bo(obj);
+			fence =
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+				dma_resv_get_excl_unlocked(msm_obj->resv);
+#else
 				dma_resv_get_excl_rcu(msm_obj->resv);
+#endif
 
 			drm_atomic_set_fence_for_plane(new_plane_state, fence);
+#endif
 		}
 		c->plane_mask |= (1 << drm_plane_index(plane));
 	}

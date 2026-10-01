@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2021-2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -28,6 +28,9 @@
 #define MDP_LTM_INTR_EN_OFF		0x50
 #define MDP_LTM_INTR_STATUS_OFF		0x54
 #define MDP_LTM_INTR_CLEAR_OFF		0x58
+#define MDP_WB_INTR_EN_OFF		0x18C
+#define MDP_WB_INTR_STATUS_OFF		0x190
+#define MDP_WB_INTR_CLEAR_OFF		0x194
 
 /**
  * WB interrupt status bit definitions
@@ -80,31 +83,6 @@
 #define SDE_INTR_INTF_3_VSYNC BIT(31)
 
 /**
- * Pingpong Secondary interrupt status bit definitions
- */
-#define SDE_INTR_PING_PONG_S0_AUTOREFRESH_DONE BIT(0)
-#define SDE_INTR_PING_PONG_S0_WR_PTR BIT(4)
-#define SDE_INTR_PING_PONG_S0_RD_PTR BIT(8)
-#define SDE_INTR_PING_PONG_S0_TEAR_DETECTED BIT(22)
-#define SDE_INTR_PING_PONG_S0_TE_DETECTED BIT(28)
-
-/**
- * Pingpong TEAR detection interrupt status bit definitions
- */
-#define SDE_INTR_PING_PONG_0_TEAR_DETECTED BIT(16)
-#define SDE_INTR_PING_PONG_1_TEAR_DETECTED BIT(17)
-#define SDE_INTR_PING_PONG_2_TEAR_DETECTED BIT(18)
-#define SDE_INTR_PING_PONG_3_TEAR_DETECTED BIT(19)
-
-/**
- * Pingpong TE detection interrupt status bit definitions
- */
-#define SDE_INTR_PING_PONG_0_TE_DETECTED BIT(24)
-#define SDE_INTR_PING_PONG_1_TE_DETECTED BIT(25)
-#define SDE_INTR_PING_PONG_2_TE_DETECTED BIT(26)
-#define SDE_INTR_PING_PONG_3_TE_DETECTED BIT(27)
-
-/**
  * Ctl start interrupt status bit definitions
  */
 #define SDE_INTR_CTL_0_START BIT(9)
@@ -115,14 +93,20 @@
 #define SDE_INTR_CTL_5_START BIT(23)
 
 /**
+ * Ctl done interrupt status bit definitions
+ */
+#define SDE_INTR_CTL_0_DONE BIT(0)
+#define SDE_INTR_CTL_1_DONE BIT(1)
+#define SDE_INTR_CTL_2_DONE BIT(2)
+#define SDE_INTR_CTL_3_DONE BIT(3)
+#define SDE_INTR_CTL_4_DONE BIT(4)
+#define SDE_INTR_CTL_5_DONE BIT(5)
+
+/**
  * Concurrent WB overflow interrupt status bit definitions
  */
-#define SDE_INTR_CWB_1_OVERFLOW BIT(8)
-#define SDE_INTR_CWB_2_OVERFLOW BIT(14)
-#define SDE_INTR_CWB_3_OVERFLOW BIT(15)
-#define SDE_INTR_CWB_4_OVERFLOW BIT(20)
-#define SDE_INTR_CWB_5_OVERFLOW BIT(21)
 #define SDE_INTR_CWB_OVERFLOW BIT(29)
+#define SDE_INTR_CWB_2_OVERFLOW BIT(28)
 
 /**
  * Histogram VIG done interrupt status bit definitions
@@ -187,12 +171,18 @@
 #define SDE_INTR_INTF_TEAR_RD_PTR BIT(2)
 #define SDE_INTR_INTF_TEAR_TE_DETECTED BIT(3)
 #define SDE_INTR_INTF_TEAR_TEAR_DETECTED BIT(4)
+#define SDE_INTR_INTF_TEAR_TE_DEASSERT_DETECTED BIT(6)
 
 /**
  * LTM interrupt status bit definitions
  */
 #define SDE_INTR_LTM_STATS_DONE BIT(0)
 #define SDE_INTR_LTM_STATS_WB_PB BIT(5)
+
+/**
+ * WB interrupt status bit definitions
+ */
+#define SDE_INTR_WB_PROG_LINE BIT(0)
 
 /**
  * struct sde_intr_reg - array of SDE register sets
@@ -235,8 +225,8 @@ struct sde_irq_type {
  */
 static struct sde_irq_type sde_irq_intr_map[] = {
 
-	{ SDE_IRQ_TYPE_WB_ROT_COMP, WB_0, SDE_INTR_WB_0_DONE, -1},
-	{ SDE_IRQ_TYPE_WB_ROT_COMP, WB_1, SDE_INTR_WB_1_DONE, -1},
+	{ SDE_IRQ_TYPE_WB_WFD_COMP, WB_0, SDE_INTR_WB_0_DONE, -1},
+	{ SDE_IRQ_TYPE_WB_WFD_COMP, WB_1, SDE_INTR_WB_1_DONE, -1},
 	{ SDE_IRQ_TYPE_WD_TIMER, WD_TIMER_0, SDE_INTR_WD_TIMER_0_DONE, -1},
 	{ SDE_IRQ_TYPE_WD_TIMER, WD_TIMER_1, SDE_INTR_WD_TIMER_1_DONE, -1},
 
@@ -293,17 +283,6 @@ static struct sde_irq_type sde_irq_intr_map[] = {
 };
 
 static struct sde_irq_type sde_irq_intr2_map[] = {
-
-	{ SDE_IRQ_TYPE_PING_PONG_AUTO_REF, PINGPONG_S0,
-		SDE_INTR_PING_PONG_S0_AUTOREFRESH_DONE, -1},
-	{ SDE_IRQ_TYPE_PING_PONG_WR_PTR, PINGPONG_S0,
-		SDE_INTR_PING_PONG_S0_WR_PTR, -1},
-
-	{ SDE_IRQ_TYPE_CWB_OVERFLOW, CWB_1, SDE_INTR_CWB_1_OVERFLOW, -1},
-
-	{ SDE_IRQ_TYPE_PING_PONG_RD_PTR, PINGPONG_S0,
-		SDE_INTR_PING_PONG_S0_RD_PTR, -1},
-
 	{ SDE_IRQ_TYPE_CTL_START, CTL_0,
 		SDE_INTR_CTL_0_START, -1},
 	{ SDE_IRQ_TYPE_CTL_START, CTL_1,
@@ -317,37 +296,21 @@ static struct sde_irq_type sde_irq_intr2_map[] = {
 	{ SDE_IRQ_TYPE_CTL_START, CTL_5,
 		SDE_INTR_CTL_5_START, -1},
 
-	{ SDE_IRQ_TYPE_CWB_OVERFLOW, CWB_2, SDE_INTR_CWB_2_OVERFLOW, -1},
-	{ SDE_IRQ_TYPE_CWB_OVERFLOW, CWB_3, SDE_INTR_CWB_3_OVERFLOW, -1},
-
-	{ SDE_IRQ_TYPE_PING_PONG_TEAR_CHECK, PINGPONG_0,
-		SDE_INTR_PING_PONG_0_TEAR_DETECTED, -1},
-	{ SDE_IRQ_TYPE_PING_PONG_TEAR_CHECK, PINGPONG_1,
-		SDE_INTR_PING_PONG_1_TEAR_DETECTED, -1},
-	{ SDE_IRQ_TYPE_PING_PONG_TEAR_CHECK, PINGPONG_2,
-		SDE_INTR_PING_PONG_2_TEAR_DETECTED, -1},
-	{ SDE_IRQ_TYPE_PING_PONG_TEAR_CHECK, PINGPONG_3,
-		SDE_INTR_PING_PONG_3_TEAR_DETECTED, -1},
-
-	{ SDE_IRQ_TYPE_CWB_OVERFLOW, CWB_4, SDE_INTR_CWB_4_OVERFLOW, -1},
-	{ SDE_IRQ_TYPE_CWB_OVERFLOW, CWB_5, SDE_INTR_CWB_5_OVERFLOW, -1},
-
-	{ SDE_IRQ_TYPE_PING_PONG_TEAR_CHECK, PINGPONG_S0,
-		SDE_INTR_PING_PONG_S0_TEAR_DETECTED, -1},
-
-	{ SDE_IRQ_TYPE_PING_PONG_TE_CHECK, PINGPONG_0,
-		SDE_INTR_PING_PONG_0_TE_DETECTED, -1},
-	{ SDE_IRQ_TYPE_PING_PONG_TE_CHECK, PINGPONG_1,
-		SDE_INTR_PING_PONG_1_TE_DETECTED, -1},
-	{ SDE_IRQ_TYPE_PING_PONG_TE_CHECK, PINGPONG_2,
-		SDE_INTR_PING_PONG_2_TE_DETECTED, -1},
-	{ SDE_IRQ_TYPE_PING_PONG_TE_CHECK, PINGPONG_3,
-		SDE_INTR_PING_PONG_3_TE_DETECTED, -1},
-
-	{ SDE_IRQ_TYPE_PING_PONG_TE_CHECK, PINGPONG_S0,
-		SDE_INTR_PING_PONG_S0_TE_DETECTED, -1},
+	{ SDE_IRQ_TYPE_CTL_DONE, CTL_0,
+		SDE_INTR_CTL_0_DONE, -1},
+	{ SDE_IRQ_TYPE_CTL_DONE, CTL_1,
+		SDE_INTR_CTL_1_DONE, -1},
+	{ SDE_IRQ_TYPE_CTL_DONE, CTL_2,
+		SDE_INTR_CTL_2_DONE, -1},
+	{ SDE_IRQ_TYPE_CTL_DONE, CTL_3,
+		SDE_INTR_CTL_3_DONE, -1},
+	{ SDE_IRQ_TYPE_CTL_DONE, CTL_4,
+		SDE_INTR_CTL_4_DONE, -1},
+	{ SDE_IRQ_TYPE_CTL_DONE, CTL_5,
+		SDE_INTR_CTL_5_DONE, -1},
 
 	{ SDE_IRQ_TYPE_CWB_OVERFLOW, PINGPONG_CWB_0, SDE_INTR_CWB_OVERFLOW, -1},
+	{ SDE_IRQ_TYPE_CWB_OVERFLOW, PINGPONG_CWB_2, SDE_INTR_CWB_2_OVERFLOW, -1},
 
 	{ SDE_IRQ_TYPE_PING_PONG_COMP, PINGPONG_4,
 		SDE_INTR_PING_PONG_4_DONE, -1},
@@ -417,13 +380,21 @@ static struct sde_irq_type sde_irq_intf_te_map[] = {
 		SDE_INTR_INTF_TEAR_WR_PTR, -1},
 	{ SDE_IRQ_TYPE_INTF_TEAR_RD_PTR, -1,
 		SDE_INTR_INTF_TEAR_RD_PTR, -1},
-	{ SDE_IRQ_TYPE_INTF_TEAR_TEAR_CHECK, -1,
+	{ SDE_IRQ_TYPE_INTF_TEAR_TEAR_DETECT, -1,
 		SDE_INTR_INTF_TEAR_TEAR_DETECTED, -1},
+	{ SDE_IRQ_TYPE_INTF_TEAR_TE_ASSERT, -1,
+		SDE_INTR_INTF_TEAR_TE_DETECTED, -1},
+	{ SDE_IRQ_TYPE_INTF_TEAR_TE_DEASSERT, -1,
+		SDE_INTR_INTF_TEAR_TE_DEASSERT_DETECTED, -1},
 };
 
 static struct sde_irq_type sde_irq_ltm_map[] = {
 	{ SDE_IRQ_TYPE_LTM_STATS_DONE, -1, SDE_INTR_LTM_STATS_DONE, -1},
 	{ SDE_IRQ_TYPE_LTM_STATS_WB_PB, -1, SDE_INTR_LTM_STATS_WB_PB, -1},
+};
+
+static struct sde_irq_type sde_irq_wb_map[] = {
+	{ SDE_IRQ_TYPE_WB_PROG_LINE, -1, SDE_INTR_WB_PROG_LINE, -1},
 };
 
 static int sde_hw_intr_irqidx_lookup(struct sde_hw_intr *intr,
@@ -475,10 +446,6 @@ static void sde_hw_intr_dispatch_irq(struct sde_hw_intr *intr,
 				end_idx > intr->sde_irq_map_size)
 			continue;
 
-		/* Skip the interrupts which are not enabled */
-		if (!intr->cache_irq_mask[reg_idx])
-			continue;
-
 		/* Read interrupt status */
 		irq_status = SDE_REG_READ(&intr->hw, intr->sde_irq_tbl[reg_idx].status_off);
 
@@ -507,11 +474,16 @@ static void sde_hw_intr_dispatch_irq(struct sde_hw_intr *intr,
 				 reg_idx)) {
 				/*
 				 * Once a match on irq mask, perform a callback
-				 * to the given cbfunc. This callback is done
-				 * after clearing the interrupt registers.
+				 * to the given cbfunc. cbfunc will take care
+				 * the interrupt status clearing. If cbfunc is
+				 * not provided, then the interrupt clearing
+				 * is here.
 				 */
 				if (cbfunc)
 					cbfunc(arg, irq_idx);
+				else
+					intr->ops.clear_intr_status_nolock(
+							intr, irq_idx);
 
 				/*
 				 * When callback finish, clear the irq_status
@@ -850,6 +822,12 @@ static int _set_sde_irq_tbl_offset(struct sde_intr_reg *sde_irq,
 		sde_irq->en_off = base_offset + MDP_LTM_INTR_EN_OFF;
 		sde_irq->status_off = base_offset + MDP_LTM_INTR_STATUS_OFF;
 		break;
+	case SDE_INTR_HWBLK_WB:
+		sde_irq->clr_off = base_offset + MDP_WB_INTR_CLEAR_OFF;
+		sde_irq->en_off = base_offset + MDP_WB_INTR_EN_OFF;
+		sde_irq->status_off = base_offset + MDP_WB_INTR_STATUS_OFF;
+		break;
+
 	default:
 		pr_err("unrecognized intr blk type %d\n",
 				item->type);
@@ -869,6 +847,7 @@ static void __setup_intr_ops(struct sde_hw_intr_ops *ops)
 	ops->disable_all_irqs = sde_hw_intr_disable_irqs;
 	ops->get_interrupt_sources = sde_hw_intr_get_interrupt_sources;
 	ops->clear_interrupt_status = sde_hw_intr_clear_interrupt_status;
+	ops->clear_intr_status_nolock = sde_hw_intr_clear_intr_status_nolock;
 	ops->get_interrupt_status = sde_hw_intr_get_interrupt_status;
 	ops->get_intr_status_nolock = sde_hw_intr_get_intr_status_nolock;
 }
@@ -881,7 +860,7 @@ static struct sde_mdss_base_cfg *__intr_offset(struct sde_mdss_cfg *m,
 
 	hw->base_off = addr;
 	hw->blk_off = m->mdss[0].base;
-	hw->hwversion = m->hwversion;
+	hw->hw_rev = m->hw_rev;
 	return &m->mdss[0];
 }
 
@@ -936,6 +915,9 @@ static inline u32 _get_irq_map_size(struct sde_intr_irq_offsets *item)
 	case SDE_INTR_HWBLK_LTM:
 		ret = ARRAY_SIZE(sde_irq_ltm_map);
 		break;
+	case SDE_INTR_HWBLK_WB:
+		ret = ARRAY_SIZE(sde_irq_wb_map);
+		break;
 	default:
 		pr_err("invalid type: %d\n", item->type);
 	}
@@ -985,6 +967,9 @@ static inline struct sde_irq_type *_get_irq_map_addr(
 		break;
 	case SDE_INTR_HWBLK_LTM:
 		ret = sde_irq_ltm_map;
+		break;
+	case SDE_INTR_HWBLK_WB:
+		ret = sde_irq_wb_map;
 		break;
 	default:
 		pr_err("invalid type: %d\n", item->type);

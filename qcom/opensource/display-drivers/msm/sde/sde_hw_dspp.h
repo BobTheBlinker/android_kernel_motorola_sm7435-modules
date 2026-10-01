@@ -1,12 +1,14 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _SDE_HW_DSPP_H
 #define _SDE_HW_DSPP_H
 
-#include "sde_hw_blk.h"
+#include <drm/msm_drm_pp.h>
+#include "msm_drv.h"
 
 struct sde_hw_dspp;
 
@@ -249,12 +251,20 @@ struct sde_hw_dspp_ops {
 	int (*setup_rc_pu_roi)(struct sde_hw_dspp *ctx, void *cfg);
 
 	/**
-	 * setup_rc_data -  Program RC mask data
+	 * validate_spr_init_config -  Validate SPR configuration
 	 * @ctx: Pointer to dspp context.
 	 * @cfg: Pointer to configuration.
 	 * Return: 0 on success, non-zero otherwise.
 	 */
-	int (*setup_rc_data)(struct sde_hw_dspp *ctx, void *cfg);
+	int (*validate_spr_init_config)(struct sde_hw_dspp *ctx, void *cfg);
+
+	/**
+	 * validate_spr_udc_config -  Validate SPR configuration
+	 * @ctx: Pointer to dspp context.
+	 * @cfg: Pointer to configuration.
+	 * Return: 0 on success, non-zero otherwise.
+	 */
+	int (*validate_spr_udc_config)(struct sde_hw_dspp *ctx, void *cfg);
 
 	/**
 	 * setup_spr_init_config - function to configure spr hw block
@@ -264,11 +274,26 @@ struct sde_hw_dspp_ops {
 	void (*setup_spr_init_config)(struct sde_hw_dspp *ctx, void *cfg);
 
 	/**
+	 * setup_spr_udc_config - function to configure spr hw block
+	 * @ctx: Pointer to dspp context
+	 * @cfg: Pointer to configuration
+	 */
+	void (*setup_spr_udc_config)(struct sde_hw_dspp *ctx, void *cfg);
+
+	/**
 	 * setup_spr_pu_config - function to configure spr hw block pu offsets
 	 * @ctx: Pointer to dspp context
 	 * @cfg: Pointer to configuration
 	 */
 	void (*setup_spr_pu_config)(struct sde_hw_dspp *ctx, void *cfg);
+
+	/**
+	 * read_spr_opr_value - function to read spr opr value
+	 * @ctx: Pointer to dspp context
+	 * @opr_value: Pointer to opr value
+	 */
+	int (*read_spr_opr_value)(struct sde_hw_dspp *ctx, u32 *opr_value);
+
 	/**
 	 * setup_demura_cfg - function to program demura cfg
 	 * @ctx: Pointer to dspp context
@@ -295,6 +320,22 @@ struct sde_hw_dspp_ops {
 	 * @cfg: Pointer to configuration
 	 */
 	void (*setup_demura_pu_config)(struct sde_hw_dspp *ctx, void *cfg);
+	/**
+	 * setup_demura_cfg0_param2 - function to configure demura cfg0_param2 params
+	 * @ctx: Pointer to dspp context
+	 * @cfg: Pointer to configuration
+	 */
+	void (*setup_demura_cfg0_param2)(struct sde_hw_dspp *ctx, void *cfg);
+};
+
+/**
+ * struct sde_hw_rc_state - rounded corner cached state per RC instance
+ * @last_rc_mask_cfg: cached value of most recent programmed mask.
+ * @last_roi_list: cached value of most recent processed list of ROIs.
+ */
+struct sde_hw_rc_state {
+	struct drm_msm_rc_mask_cfg *last_rc_mask_cfg;
+	struct msm_roi_list *last_roi_list;
 };
 
 /**
@@ -307,9 +348,10 @@ struct sde_hw_dspp_ops {
  * @sb_dma_in_use: hint indicating if sb dma is being used for this dspp
  * @ops: Pointer to operations possible for this DSPP
  * @ltm_checksum_support: flag to check if checksum present
+ * @spr_cfg_18_default: Default SPR cfg 18 HW details. Needed for PU handling
+ * @rc_state: Structure for RC state
  */
 struct sde_hw_dspp {
-	struct sde_hw_blk base;
 	struct sde_hw_blk_reg_map hw;
 
 	/* dspp top */
@@ -320,19 +362,23 @@ struct sde_hw_dspp {
 	const struct sde_dspp_cfg *cap;
 	bool sb_dma_in_use;
 	bool ltm_checksum_support;
+	u32 spr_cfg_18_default;
 
 	/* Ops */
 	struct sde_hw_dspp_ops ops;
+
+	/* rc state */
+	struct sde_hw_rc_state rc_state;
 };
 
 /**
- * sde_hw_dspp - convert base object sde_hw_base to container
- * @hw: Pointer to base hardware block
+ * to_sde_hw_dspp - convert base hw object to sde_hw_dspp container
+ * @hw: Pointer to hardware block register map object
  * return: Pointer to hardware block container
  */
-static inline struct sde_hw_dspp *to_sde_hw_dspp(struct sde_hw_blk *hw)
+static inline struct sde_hw_dspp *to_sde_hw_dspp(struct sde_hw_blk_reg_map *hw)
 {
-	return container_of(hw, struct sde_hw_dspp, base);
+	return container_of(hw, struct sde_hw_dspp, hw);
 }
 
 /**
@@ -342,14 +388,14 @@ static inline struct sde_hw_dspp *to_sde_hw_dspp(struct sde_hw_blk *hw)
  * @addr: Mapped register io address of MDP
  * @Return: pointer to structure or ERR_PTR
  */
-struct sde_hw_dspp *sde_hw_dspp_init(enum sde_dspp idx,
+struct sde_hw_blk_reg_map *sde_hw_dspp_init(enum sde_dspp idx,
 			void __iomem *addr,
 			struct sde_mdss_cfg *m);
 
 /**
  * sde_hw_dspp_destroy(): Destroys DSPP driver context
- * @dspp:   Pointer to DSPP driver context
+ * @hw: Pointer to hardware block register map object
  */
-void sde_hw_dspp_destroy(struct sde_hw_dspp *dspp);
+void sde_hw_dspp_destroy(struct sde_hw_blk_reg_map *hw);
 
 #endif /*_SDE_HW_DSPP_H */

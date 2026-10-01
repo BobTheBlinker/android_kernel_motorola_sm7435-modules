@@ -1,6 +1,6 @@
 /*
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,9 +17,14 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/debugfs.h>
+#include <linux/version.h>
 #include <linux/platform_device.h>
 #include <drm/drm_edid.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+#include <drm/display/drm_dp_helper.h>
+#else
 #include <drm/drm_dp_helper.h>
+#endif
 #include "dp_debug.h"
 #include "dp_mst_sim.h"
 
@@ -342,6 +347,7 @@ int dp_sim_update_port_num(struct dp_aux_bridge *bridge, u32 port_num)
 		return -EINVAL;
 
 	sim_dev = to_dp_sim_dev(bridge);
+	DP_INFO("Update port count from %d to %d\n", sim_dev->port_num, port_num);
 
 	if (port_num > sim_dev->port_num) {
 		ports = devm_kzalloc(sim_dev->dev,
@@ -361,10 +367,9 @@ int dp_sim_update_port_num(struct dp_aux_bridge *bridge, u32 port_num)
 			memcpy(&ports[i], &output_port, sizeof(*ports));
 			ports[i].peer_guid[0] = i;
 		}
-
-		sim_dev->port_num = port_num;
 	}
 
+	sim_dev->port_num = port_num;
 	rc = dp_mst_sim_update(sim_dev->bridge.mst_ctx,
 			port_num, sim_dev->ports);
 	if (rc)
@@ -1653,34 +1658,3 @@ int dp_sim_remove(struct platform_device *pdev)
 
 	return 0;
 }
-
-#if 0
-static const struct of_device_id dt_match[] = {
-	{ .compatible = "qcom,dp-mst-sim"},
-	{},
-};
-
-static struct platform_driver dp_sim_driver = {
-	.probe = dp_sim_probe,
-	.remove = dp_sim_remove,
-	.driver = {
-		.name = "dp_sim",
-		.of_match_table = dt_match,
-		.suppress_bind_attrs = true,
-	},
-};
-
-static int __init dp_sim_register(void)
-{
-	return platform_driver_register(&dp_sim_driver);
-}
-
-static void __exit dp_sim_unregister(void)
-{
-	platform_driver_unregister(&dp_sim_driver);
-}
-
-module_init(dp_sim_register);
-module_exit(dp_sim_unregister);
-
-#endif

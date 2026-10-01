@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 #define pr_fmt(fmt)	"%s: " fmt, __func__
@@ -17,11 +17,11 @@
 #include "sde_rotator_dev.h"
 #include "sde_rotator_trace.h"
 
-#ifdef CONFIG_MSM_SDE_ROTATOR_EVTLOG_DEBUG
+#if IS_ENABLED(CONFIG_MSM_SDE_ROTATOR_EVTLOG_DEBUG)
 #define SDE_EVTLOG_DEFAULT_ENABLE 1
 #else
 #define SDE_EVTLOG_DEFAULT_ENABLE 0
-#endif
+#endif /* CONFIG_MSM_SDE_ROTATOR_EVTLOG_DEBUG */
 #define SDE_EVTLOG_DEFAULT_PANIC 1
 #define SDE_EVTLOG_DEFAULT_REGDUMP SDE_ROT_DBG_DUMP_IN_MEM
 #define SDE_EVTLOG_DEFAULT_VBIF_DBGBUSDUMP SDE_ROT_DBG_DUMP_IN_MEM
@@ -882,11 +882,7 @@ static int sde_rotator_base_create_debugfs(
 	debugfs_create_u32("iommu_ref_cnt", 0444, debugfs_root, &mdata->iommu_ref_cnt);
 
 	mdata->clk_always_on = false;
-	if (!debugfs_create_bool("clk_always_on", 0644,
-			debugfs_root, &mdata->clk_always_on)) {
-		SDEROT_WARN("failed to create debugfs clk_always_on\n");
-		return -EINVAL;
-	}
+	debugfs_create_bool("clk_always_on", 0644, debugfs_root, &mdata->clk_always_on);
 
 	return 0;
 }

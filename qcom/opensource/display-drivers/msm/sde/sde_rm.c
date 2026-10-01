@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
-#define pr_fmt(fmt)	"[drm:%s] " fmt, __func__
+#define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 #include "sde_kms.h"
 #include "sde_hw_lm.h"
 #include "sde_hw_ctl.h"
@@ -21,6 +21,7 @@
 #include "sde_crtc.h"
 #include "sde_hw_qdss.h"
 #include "sde_vbif.h"
+#include "sde_hw_dnsc_blur.h"
 
 #define RESERVED_BY_OTHER(h, r) \
 	(((h)->rsvp && ((h)->rsvp->enc_id != (r)->enc_id)) ||\
@@ -35,6 +36,8 @@
 #define RM_RQ_DS(r) ((r)->top_ctrl & BIT(SDE_RM_TOPCTL_DS))
 #define RM_RQ_CWB(r) ((r)->top_ctrl & BIT(SDE_RM_TOPCTL_CWB))
 #define RM_RQ_DCWB(r) ((r)->top_ctrl & BIT(SDE_RM_TOPCTL_DCWB))
+#define RM_RQ_DNSC_BLUR(r) ((r)->top_ctrl & BIT(SDE_RM_TOPCTL_DNSC_BLUR))
+#define RM_RQ_CDM(r) ((r)->top_ctrl & BIT(SDE_RM_TOPCTL_CDM))
 #define RM_IS_TOPOLOGY_MATCH(t, r) ((t).num_lm == (r).num_lm && \
 				(t).num_comp_enc == (r).num_enc && \
 				(t).num_intf == (r).num_intf && \
@@ -121,6 +124,7 @@ char sde_hw_blk_str[SDE_HW_BLK_MAX][SDE_HW_BLK_NAME_LEN] = {
 	"vdc",
 	"merge_3d",
 	"qdss",
+	"dnsc_blur"
 };
 
 /**
@@ -177,7 +181,7 @@ struct sde_rm_hw_blk {
 	struct sde_rm_rsvp *rsvp_nxt;
 	enum sde_hw_blk_type type;
 	uint32_t id;
-	struct sde_hw_blk *hw;
+	struct sde_hw_blk_reg_map *hw;
 };
 
 /**
@@ -209,23 +213,23 @@ static void _sde_rm_inc_resource_info_lm(struct sde_rm *rm,
 	list_for_each_entry(blk2, &rm->hw_blks[SDE_HW_BLK_LM], list) {
 		lm_cfg2 = to_sde_hw_mixer(blk2->hw)->cap;
 		/*
-		 * If lm2 is free, or
-		 * lm1 & lm2 reserved by same enc, check mask
+		 * If the paired lm is free, or is reserved by the same encoder
+		 * set the bit for the 3d mux associated with the lm
+		 * counting these set bits will give an accurate count of available 3dmux
 		 */
-		if ((!blk2->rsvp || (blk->rsvp &&
-				blk2->rsvp->enc_id == blk->rsvp->enc_id
-				&& lm_cfg->id > lm_cfg2->id)) &&
+		if ((!blk2->rsvp || (blk->rsvp && blk2->rsvp->enc_id == blk->rsvp->enc_id)) &&
 				test_bit(lm_cfg->id, &lm_cfg2->lm_pair_mask))
-			avail_res->num_3dmux++;
+			set_bit(lm_cfg->merge_3d, &avail_res->merge_3d_mask);
 	}
+
+	avail_res->num_3dmux = hweight_long(avail_res->merge_3d_mask);
 }
 
 static void _sde_rm_dec_resource_info_lm(struct sde_rm *rm,
 	struct msm_resource_caps_info *avail_res,
 	struct sde_rm_hw_blk *blk)
 {
-	struct sde_rm_hw_blk *blk2;
-	const struct sde_lm_cfg *lm_cfg, *lm_cfg2;
+	const struct sde_lm_cfg *lm_cfg;
 
 	lm_cfg = to_sde_hw_mixer(blk->hw)->cap;
 
@@ -235,14 +239,12 @@ static void _sde_rm_dec_resource_info_lm(struct sde_rm *rm,
 
 	avail_res->num_lm--;
 
-	/* Check for 3d muxes by comparing paired lms */
-	list_for_each_entry(blk2, &rm->hw_blks[SDE_HW_BLK_LM], list) {
-		lm_cfg2 = to_sde_hw_mixer(blk2->hw)->cap;
-		/* If lm2 is free and lm1 is now being reserved */
-		if (!blk2->rsvp &&
-				test_bit(lm_cfg->id, &lm_cfg2->lm_pair_mask))
-			avail_res->num_3dmux--;
-	}
+	/*
+	 * Clear the bit for the 3d mux associated with the lm
+	 * counting these set bits will give an accurate count of available 3dmux
+	 */
+	clear_bit(lm_cfg->merge_3d, &avail_res->merge_3d_mask);
+	avail_res->num_3dmux = hweight_long(avail_res->merge_3d_mask);
 }
 
 static void _sde_rm_inc_resource_info(struct sde_rm *rm,
@@ -283,27 +285,33 @@ void sde_rm_get_resource_info(struct sde_rm *rm,
 {
 	struct sde_rm_hw_blk *blk;
 	enum sde_hw_blk_type type;
-	struct sde_rm_rsvp rsvp;
 	const struct sde_lm_cfg *lm_cfg;
 	bool is_built_in, is_pref;
 	u32 lm_pref = (BIT(SDE_DISP_PRIMARY_PREF) | BIT(SDE_DISP_SECONDARY_PREF));
+
+	mutex_lock(&rm->rm_lock);
 
 	/* Get all currently available resources */
 	memcpy(avail_res, &rm->avail_res,
 			sizeof(rm->avail_res));
 
+	/**
+	 * When the encoder is null, assume display is external in order to return the count of
+	 * availalbe non-preferred LMs
+	 */
 	if (!drm_enc)
-		return;
-
-	is_built_in = sde_encoder_is_built_in_display(drm_enc);
-
-	rsvp.enc_id = drm_enc->base.id;
+		is_built_in = false;
+	else
+		is_built_in = sde_encoder_is_built_in_display(drm_enc);
 
 	for (type = 0; type < SDE_HW_BLK_MAX; type++) {
 		list_for_each_entry(blk, &rm->hw_blks[type], list) {
 			/* Add back resources allocated to the given encoder */
-			if (blk->rsvp && blk->rsvp->enc_id == rsvp.enc_id)
+			if (blk->rsvp && drm_enc && blk->rsvp->enc_id == drm_enc->base.id) {
 				_sde_rm_inc_resource_info(rm, avail_res, blk);
+				if (type == SDE_HW_BLK_LM)
+					avail_res->num_lm_in_use++;
+			}
 
 			/**
 			 * Remove unallocated preferred lms that cannot reserved
@@ -313,11 +321,13 @@ void sde_rm_get_resource_info(struct sde_rm *rm,
 				lm_cfg = to_sde_hw_mixer(blk->hw)->cap;
 				is_pref = lm_cfg->features & lm_pref;
 
-				if (!blk->rsvp && !is_built_in && is_pref)
+				if (!blk->rsvp && !blk->rsvp_nxt && !is_built_in && is_pref)
 					_sde_rm_dec_resource_info(rm, avail_res, blk);
 			}
 		}
 	}
+
+	mutex_unlock(&rm->rm_lock);
 }
 
 static void _sde_rm_print_rsvps(
@@ -475,7 +485,7 @@ static bool _sde_rm_request_hw_blk_locked(struct sde_rm *rm,
 			return false;
 		}
 
-		if (blk->hw->id == hw_blk_info->id) {
+		if (blk->id == hw_blk_info->id) {
 			hw_blk_info->hw = blk->hw;
 			SDE_DEBUG("found type %d id %d\n",
 					blk->type, blk->id);
@@ -511,7 +521,7 @@ bool sde_rm_request_hw_blk(struct sde_rm *rm, struct sde_rm_hw_request *hw)
 	return ret;
 }
 
-static void _sde_rm_hw_destroy(enum sde_hw_blk_type type, void *hw)
+static void _sde_rm_hw_destroy(enum sde_hw_blk_type type, struct sde_hw_blk_reg_map *hw)
 {
 	switch (type) {
 	case SDE_HW_BLK_LM:
@@ -547,6 +557,9 @@ static void _sde_rm_hw_destroy(enum sde_hw_blk_type type, void *hw)
 	case SDE_HW_BLK_QDSS:
 		sde_hw_qdss_destroy(hw);
 		break;
+	case SDE_HW_BLK_DNSC_BLUR:
+		sde_hw_dnsc_blur_destroy(hw);
+		break;
 	case SDE_HW_BLK_SSPP:
 		/* SSPPs are not managed by the resource manager */
 	case SDE_HW_BLK_TOP:
@@ -555,6 +568,18 @@ static void _sde_rm_hw_destroy(enum sde_hw_blk_type type, void *hw)
 	default:
 		SDE_ERROR("unsupported block type %d\n", type);
 		break;
+	}
+}
+
+static void _deinit_hw_fences(struct sde_rm *rm)
+{
+	struct sde_rm_hw_iter iter;
+
+	sde_rm_init_hw_iter(&iter, 0, SDE_HW_BLK_CTL);
+	while (_sde_rm_get_hw_locked(rm, &iter)) {
+		struct sde_hw_ctl *ctl = to_sde_hw_ctl(iter.blk->hw);
+
+		sde_hw_fence_deinit(ctl);
 	}
 }
 
@@ -569,6 +594,8 @@ int sde_rm_destroy(struct sde_rm *rm)
 		SDE_ERROR("invalid rm\n");
 		return -EINVAL;
 	}
+
+	_deinit_hw_fences(rm);
 
 	list_for_each_entry_safe(rsvp_cur, rsvp_nxt, &rm->rsvps, list) {
 		list_del(&rsvp_cur->list);
@@ -604,22 +631,10 @@ static int _sde_rm_hw_blk_create(
 	int rc;
 	struct sde_rm_hw_blk *blk;
 	struct sde_hw_mdp *hw_mdp;
-	void *hw;
-	struct sde_kms *sde_kms;
-	struct sde_vbif_clk_client clk_client;
+	struct sde_hw_blk_reg_map *hw;
+	struct sde_kms *sde_kms = to_sde_kms(ddev_to_msm_kms(rm->dev));
+	struct sde_vbif_clk_client clk_client = {0};
 
-	if (!rm) {
-		SDE_ERROR("invalid rm\n");
-		return -EINVAL;
-	}
-
-	sde_kms = to_sde_kms(ddev_to_msm_kms(rm->dev));
-	if (!sde_kms || !sde_kms->catalog) {
-		SDE_ERROR("invalid kms\n");
-		return -EINVAL;
-	}
-
-	memset(&clk_client, 0, sizeof(clk_client));
 	hw_mdp = rm->hw_mdp;
 
 	switch (type) {
@@ -656,6 +671,9 @@ static int _sde_rm_hw_blk_create(
 	case SDE_HW_BLK_QDSS:
 		hw = sde_hw_qdss_init(id, mmio, cat);
 		break;
+	case SDE_HW_BLK_DNSC_BLUR:
+		hw = sde_hw_dnsc_blur_init(id, mmio, cat);
+		break;
 	case SDE_HW_BLK_SSPP:
 		/* SSPPs are not managed by the resource manager */
 	case SDE_HW_BLK_TOP:
@@ -685,7 +703,8 @@ static int _sde_rm_hw_blk_create(
 
 	_sde_rm_inc_resource_info(rm, &rm->avail_res, blk);
 
-	if (sde_kms->catalog->has_vbif_clk_split &&
+	if (sde_kms && sde_kms->catalog &&
+			test_bit(SDE_FEATURE_VBIF_CLK_SPLIT, sde_kms->catalog->features) &&
 			SDE_CLK_CTRL_VALID(clk_client.clk_ctrl)) {
 		rc = sde_vbif_clk_register(sde_kms, &clk_client);
 		if (rc) {
@@ -697,9 +716,41 @@ static int _sde_rm_hw_blk_create(
 	return 0;
 }
 
+static int _init_hw_fences(struct sde_rm *rm, bool use_ipcc, struct sde_kms *sde_kms)
+{
+	struct sde_rm_hw_iter iter;
+	int ret = 0;
+
+	sde_rm_init_hw_iter(&iter, 0, SDE_HW_BLK_CTL);
+	while (_sde_rm_get_hw_locked(rm, &iter)) {
+		struct sde_hw_ctl *ctl = to_sde_hw_ctl(iter.blk->hw);
+
+		if (sde_kms->aspace[MSM_SMMU_DOMAIN_UNSECURE] &&
+				sde_kms->aspace[MSM_SMMU_DOMAIN_UNSECURE]->mmu) {
+			if (sde_hw_fence_init(ctl, use_ipcc,
+					sde_kms->aspace[MSM_SMMU_DOMAIN_UNSECURE]->mmu)) {
+				SDE_DEBUG("failed to init hw_fence idx:%d\n", ctl->idx);
+				ret = -EINVAL;
+				break;
+			}
+		} else {
+			SDE_DEBUG("failed to init hw_fence idx:%d, no aspace to map memory\n",
+				ctl->idx);
+			ret = -EINVAL;
+			break;
+		}
+		SDE_DEBUG("init hw-fence for ctl %d", iter.blk->id);
+	}
+
+	if (ret)
+		_deinit_hw_fences(rm);
+
+	return ret;
+}
+
 static int _sde_rm_hw_blk_create_new(struct sde_rm *rm,
 			struct sde_mdss_cfg *cat,
-			void __iomem *mmio)
+			void __iomem *mmio, struct sde_kms *sde_kms)
 {
 	int i, rc = 0;
 
@@ -782,11 +833,28 @@ static int _sde_rm_hw_blk_create_new(struct sde_rm *rm,
 		}
 	}
 
+	if (cat->hw_fence_rev) {
+		if (_init_hw_fences(rm, test_bit(SDE_FEATURE_HW_FENCE_IPCC, cat->features),
+				sde_kms)) {
+			SDE_INFO("failed to init hw-fences, disabling hw-fences\n");
+			cat->hw_fence_rev = 0;
+		}
+	}
+
 	for (i = 0; i < cat->cdm_count; i++) {
 		rc = _sde_rm_hw_blk_create(rm, cat, mmio, SDE_HW_BLK_CDM,
 				cat->cdm[i].id, &cat->cdm[i]);
 		if (rc) {
 			SDE_ERROR("failed: cdm hw not available\n");
+			goto fail;
+		}
+	}
+
+	for (i = 0; i < cat->dnsc_blur_count; i++) {
+		rc = _sde_rm_hw_blk_create(rm, cat, mmio, SDE_HW_BLK_DNSC_BLUR,
+				cat->dnsc_blur[i].id, &cat->dnsc_blur[i]);
+		if (rc) {
+			SDE_ERROR("failed: dnsc_blur hw not available\n");
 			goto fail;
 		}
 	}
@@ -804,7 +872,7 @@ fail:
 	return rc;
 }
 
-#ifdef CONFIG_DEBUG_FS
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 static int _sde_rm_status_show(struct seq_file *s, void *data)
 {
 	struct sde_rm *rm;
@@ -850,13 +918,14 @@ void sde_rm_debugfs_init(struct sde_rm *sde_rm, struct dentry *parent)
 void sde_rm_debugfs_init(struct sde_rm *rm, struct dentry *parent)
 {
 }
-#endif
+#endif /* CONFIG_DEBUG_FS */
 
-int sde_rm_init(struct sde_rm *rm,
-		struct sde_mdss_cfg *cat,
-		void __iomem *mmio,
-		struct drm_device *dev)
+int sde_rm_init(struct sde_rm *rm)
 {
+	struct sde_kms *sde_kms = container_of(rm, struct sde_kms, rm);
+	struct sde_mdss_cfg *cat = sde_kms->catalog;
+	void __iomem *mmio = sde_kms->mmio;
+	struct drm_device *dev = sde_kms->dev;
 	int i, rc = 0;
 	enum sde_hw_blk_type type;
 
@@ -919,7 +988,7 @@ int sde_rm_init(struct sde_rm *rm,
 		}
 	}
 
-	rc = _sde_rm_hw_blk_create_new(rm, cat, mmio);
+	rc = _sde_rm_hw_blk_create_new(rm, cat, mmio, sde_kms);
 	if (!rc)
 		return 0;
 
@@ -1722,6 +1791,41 @@ static int _sde_rm_reserve_qdss(
 	return 0;
 }
 
+static int _sde_rm_reserve_dnsc_blur(struct sde_rm *rm, struct sde_rm_rsvp *rsvp,
+		uint32_t id, enum sde_hw_blk_type type)
+{
+	struct sde_rm_hw_iter iter;
+
+	sde_rm_init_hw_iter(&iter, 0, SDE_HW_BLK_DNSC_BLUR);
+	while (_sde_rm_get_hw_locked(rm, &iter)) {
+		struct sde_hw_dnsc_blur *dnsc_blur = to_sde_hw_dnsc_blur(iter.blk->hw);
+		bool match = false;
+
+		if (RESERVED_BY_OTHER(iter.blk, rsvp))
+			continue;
+
+		if ((type == SDE_HW_BLK_WB) && (id != WB_MAX))
+			match = test_bit(id, &dnsc_blur->caps->wb_connect);
+
+		SDE_DEBUG("type %d id %d, dnsc_blur wbs %lu match %d\n",
+				type, id, dnsc_blur->caps->wb_connect, match);
+
+		if (!match)
+			continue;
+
+		iter.blk->rsvp_nxt = rsvp;
+		SDE_EVT32(iter.blk->type, rsvp->enc_id, iter.blk->id);
+		break;
+	}
+
+	if (!iter.hw) {
+		SDE_ERROR("couldn't reserve dnsc_blur for type %d id %d\n", type, id);
+		return -ENAVAIL;
+	}
+
+	return 0;
+}
+
 static int _sde_rm_reserve_cdm(
 		struct sde_rm *rm,
 		struct sde_rm_rsvp *rsvp,
@@ -1764,13 +1868,10 @@ static int _sde_rm_reserve_cdm(
 	return 0;
 }
 
-static int _sde_rm_reserve_intf_or_wb(
-		struct sde_rm *rm,
-		struct sde_rm_rsvp *rsvp,
-		uint32_t id,
-		enum sde_hw_blk_type type,
-		bool needs_cdm)
+static int _sde_rm_reserve_intf_or_wb(struct sde_rm *rm, struct sde_rm_rsvp *rsvp,
+		uint32_t id, enum sde_hw_blk_type type, struct sde_rm_requirements *reqs)
 {
+	struct sde_encoder_hw_resources *hw_res = &reqs->hw_res;
 	struct sde_rm_hw_iter iter;
 	int ret = 0;
 
@@ -1797,17 +1898,22 @@ static int _sde_rm_reserve_intf_or_wb(
 	}
 
 	/* Expected only one intf or wb will request cdm */
-	if (needs_cdm)
+	if (hw_res->needs_cdm || RM_RQ_CDM(reqs)) {
 		ret = _sde_rm_reserve_cdm(rm, rsvp, id, type);
+		if (ret)
+			return ret;
+	}
+
+	if (RM_RQ_DNSC_BLUR(reqs))
+		ret = _sde_rm_reserve_dnsc_blur(rm, rsvp, id, type);
 
 	return ret;
 }
 
-static int _sde_rm_reserve_intf_related_hw(
-		struct sde_rm *rm,
-		struct sde_rm_rsvp *rsvp,
-		struct sde_encoder_hw_resources *hw_res)
+static int _sde_rm_reserve_intf_related_hw(struct sde_rm *rm,
+		struct sde_rm_rsvp *rsvp, struct sde_rm_requirements *reqs)
 {
+	struct sde_encoder_hw_resources *hw_res = &reqs->hw_res;
 	int i, ret = 0;
 	u32 id;
 
@@ -1815,8 +1921,7 @@ static int _sde_rm_reserve_intf_related_hw(
 		if (hw_res->intfs[i] == INTF_MODE_NONE)
 			continue;
 		id = i + INTF_0;
-		ret = _sde_rm_reserve_intf_or_wb(rm, rsvp, id,
-				SDE_HW_BLK_INTF, hw_res->needs_cdm);
+		ret = _sde_rm_reserve_intf_or_wb(rm, rsvp, id, SDE_HW_BLK_INTF, reqs);
 		if (ret)
 			return ret;
 	}
@@ -1825,8 +1930,7 @@ static int _sde_rm_reserve_intf_related_hw(
 		if (hw_res->wbs[i] == INTF_MODE_NONE)
 			continue;
 		id = i + WB_0;
-		ret = _sde_rm_reserve_intf_or_wb(rm, rsvp, id,
-				SDE_HW_BLK_WB, hw_res->needs_cdm);
+		ret = _sde_rm_reserve_intf_or_wb(rm, rsvp, id, SDE_HW_BLK_WB, reqs);
 		if (ret)
 			return ret;
 	}
@@ -2035,7 +2139,7 @@ static int _sde_rm_make_next_rsvp(struct sde_rm *rm, struct drm_encoder *enc,
 	}
 
 	/* Assign INTFs, WBs, and blks whose usage is tied to them: CTL & CDM */
-	ret = _sde_rm_reserve_intf_related_hw(rm, rsvp, &reqs->hw_res);
+	ret = _sde_rm_reserve_intf_related_hw(rm, rsvp, reqs);
 	if (ret)
 		return ret;
 
@@ -2128,7 +2232,7 @@ static int _sde_rm_get_hw_blk_for_cont_splash(struct sde_rm *rm,
 					splash_display->pipe_info.bordercolor) {
 				splash_display->lm_ids[splash_display->lm_cnt++] =
 					iter_lm.blk->id;
-				SDE_DEBUG("lm_cnt=%d lm_id %d pipe_cnt%d\n",
+				SDE_DEBUG("lm_cnt=%d lm_id %d pipe_cnt%ld\n",
 						splash_display->lm_cnt,
 						iter_lm.blk->id - LM_0,
 						pipes_per_lm);
@@ -2165,7 +2269,7 @@ int sde_rm_cont_splash_res_init(struct msm_drm_private *priv,
 				struct sde_mdss_cfg *cat)
 {
 	struct sde_rm_hw_iter iter_c;
-	int index = 0, ctl_top_cnt, splash_disp_count = 0;
+	int index = 0, ctl_top_cnt;
 	struct sde_kms *sde_kms = NULL;
 	struct sde_hw_mdp *hw_mdp;
 	struct sde_splash_display *splash_display;
@@ -2193,7 +2297,7 @@ int sde_rm_cont_splash_res_init(struct msm_drm_private *priv,
 
 	sde_rm_init_hw_iter(&iter_c, 0, SDE_HW_BLK_CTL);
 	while (_sde_rm_get_hw_locked(rm, &iter_c)
-			&& (splash_disp_count < splash_data->num_splash_displays)) {
+			&& (index < splash_data->num_splash_displays)) {
 		struct sde_hw_ctl *ctl = to_sde_hw_ctl(iter_c.blk->hw);
 
 		if (!ctl->ops.get_ctl_intf) {
@@ -2203,8 +2307,7 @@ int sde_rm_cont_splash_res_init(struct msm_drm_private *priv,
 
 		intf_sel = ctl->ops.get_ctl_intf(ctl);
 		if (intf_sel) {
-			splash_display =
-				&splash_data->splash_display[index ? 1 : 0];
+			splash_display =  &splash_data->splash_display[index];
 			SDE_DEBUG("finding resources for display=%d ctl=%d\n",
 					index, iter_c.blk->id - CTL_0);
 
@@ -2213,7 +2316,6 @@ int sde_rm_cont_splash_res_init(struct msm_drm_private *priv,
 			splash_display->cont_splash_enabled = true;
 			splash_display->ctl_ids[splash_display->ctl_cnt++] =
 				iter_c.blk->id;
-			splash_disp_count++;
 		}
 		index++;
 	}
@@ -2290,7 +2392,7 @@ static int _sde_rm_populate_requirements(
 	 */
 	if ((!RM_RQ_CWB(reqs) || !RM_RQ_DCWB(reqs))
 				&& sde_crtc_state_in_clone_mode(enc, crtc_state)) {
-		if (cfg->has_dedicated_cwb_support)
+		if (test_bit(SDE_FEATURE_DEDICATED_CWB, cfg->features))
 			reqs->top_ctrl |= BIT(SDE_RM_TOPCTL_DCWB);
 		else
 			reqs->top_ctrl |= BIT(SDE_RM_TOPCTL_CWB);
@@ -2333,7 +2435,7 @@ static int _sde_rm_populate_requirements(
 
 	SDE_DEBUG("top_ctrl: 0x%llX num_h_tiles: %d\n", reqs->top_ctrl,
 			reqs->hw_res.display_num_of_h_tiles);
-	SDE_DEBUG("num_lm: %d num_ctl: %d topology: %d split_display: %d mask: 0x%llX\n",
+	SDE_DEBUG("num_lm: %d num_ctl: %d topology: %d split_display: %d mask: 0x%X\n",
 			reqs->topology->num_lm, reqs->topology->num_ctl,
 			reqs->topology->top_name,
 			reqs->topology->needs_split_display, reqs->conn_lm_mask);
@@ -2812,47 +2914,5 @@ end:
 	_sde_rm_print_rsvps(rm, SDE_RM_STAGE_FINAL);
 	mutex_unlock(&rm->rm_lock);
 
-	return ret;
-}
-
-int sde_rm_ext_blk_destroy(struct sde_rm *rm,
-		struct drm_encoder *enc)
-{
-	struct sde_rm_hw_blk *blk = NULL, *p;
-	struct sde_rm_rsvp *rsvp;
-	enum sde_hw_blk_type type;
-	int ret = 0;
-
-	if (!rm || !enc) {
-		SDE_ERROR("invalid parameters\n");
-		return -EINVAL;
-	}
-
-	mutex_lock(&rm->rm_lock);
-
-	rsvp = _sde_rm_get_rsvp_cur(rm, enc);
-	if (!rsvp) {
-		ret = -ENOENT;
-		SDE_ERROR("failed to find rsvp for enc %d\n", enc->base.id);
-		goto end;
-	}
-
-	for (type = 0; type < SDE_HW_BLK_MAX; type++) {
-		list_for_each_entry_safe(blk, p, &rm->hw_blks[type], list) {
-			if (blk->rsvp == rsvp) {
-				list_del(&blk->list);
-				SDE_DEBUG("del blk %d %d from rsvp %d enc %d\n",
-						blk->type, blk->id,
-						rsvp->seq, rsvp->enc_id);
-				kfree(blk);
-			}
-		}
-	}
-
-	SDE_DEBUG("del rsvp %d\n", rsvp->seq);
-	list_del(&rsvp->list);
-	kfree(rsvp);
-end:
-	mutex_unlock(&rm->rm_lock);
 	return ret;
 }

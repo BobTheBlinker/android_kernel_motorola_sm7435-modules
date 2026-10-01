@@ -17,6 +17,7 @@
 #include "sde_hw_top.h"
 #include "sde_hw_wb.h"
 #include "sde_hw_cdm.h"
+#include "sde_hw_dnsc_blur.h"
 #include "sde_encoder.h"
 #include "sde_connector.h"
 
@@ -24,6 +25,13 @@
 
 /* wait for at most 2 vsync for lowest refresh rate (24hz) */
 #define DEFAULT_KICKOFF_TIMEOUT_MS		84
+
+/* if default timeout fails wait additional time in 1s increments */
+#define EXTENDED_KICKOFF_TIMEOUT_MS      1000
+#define EXTENDED_KICKOFF_TIMEOUT_ITERS   10
+
+/* wait 1 sec for the emulated targets */
+#define MAX_KICKOFF_TIMEOUT_MS                  100000
 
 #define MAX_TE_PROFILE_COUNT		5
 /**
@@ -59,6 +67,14 @@ enum sde_enc_enable_state {
 	SDE_ENC_ENABLING,
 	SDE_ENC_ENABLED,
 	SDE_ENC_ERR_NEEDS_HW_RESET
+};
+
+enum sde_enc_irqs {
+	SDE_ENC_CMD_TE_ASSERT,
+	SDE_ENC_CMD_TE_DEASSERT,
+	SDE_ENC_CMD_TEAR_DETECT,
+
+	SDE_ENC_IRQ_MAX
 };
 
 struct sde_encoder_phys;
@@ -136,6 +152,7 @@ struct sde_encoder_virt_ops {
  *                              count and underrun line count
  * @add_to_minidump:		Add this phys_enc data to minidumps
  * @disable_autorefresh:	Disable autorefresh
+ * @idle_pc_cache_display_status:	caches display status at idle power collapse
  */
 
 struct sde_encoder_phys_ops {
@@ -177,6 +194,7 @@ struct sde_encoder_phys_ops {
 			u32 *misr_value);
 	void (*hw_reset)(struct sde_encoder_phys *phys_enc);
 	void (*irq_control)(struct sde_encoder_phys *phys, bool enable);
+	void (*dynamic_irq_control)(struct sde_encoder_phys *phys, bool enable);
 	void (*update_split_role)(struct sde_encoder_phys *phys_enc,
 			enum sde_enc_split_role role);
 	void (*control_te)(struct sde_encoder_phys *phys_enc, bool enable);
@@ -190,6 +208,7 @@ struct sde_encoder_phys_ops {
 	u32 (*get_underrun_line_count)(struct sde_encoder_phys *phys);
 	void (*add_to_minidump)(struct sde_encoder_phys *phys);
 	void (*disable_autorefresh)(struct sde_encoder_phys *phys);
+	void (*idle_pc_cache_display_status)(struct sde_encoder_phys *phys);
 };
 
 /**
@@ -197,6 +216,8 @@ struct sde_encoder_phys_ops {
  * @INTR_IDX_VSYNC:    Vsync interrupt for video mode panel
  * @INTR_IDX_PINGPONG: Pingpong done interrupt for cmd mode panel
  * @INTR_IDX_UNDERRUN: Underrun interrupt for video and cmd mode panel
+ * @INTR_IDX_CTL_START:Control start interrupt to indicate the frame start
+ * @INTR_IDX_CTL_DONE: Control done interrupt indicating the control path being idle
  * @INTR_IDX_RDPTR:    Readpointer done interrupt for cmd mode panel
  * @INTR_IDX_WB_DONE:  Writeback done interrupt for WB
  * @INTR_IDX_PP1_OVFL: Pingpong overflow interrupt on PP1 for Concurrent WB
@@ -205,15 +226,21 @@ struct sde_encoder_phys_ops {
  * @INTR_IDX_PP4_OVFL: Pingpong overflow interrupt on PP4 for Concurrent WB
  * @INTR_IDX_PP5_OVFL: Pingpong overflow interrupt on PP5 for Concurrent WB
  * @INTR_IDX_PP_CWB_OVFL: Pingpong overflow interrupt on PP_CWB0/1 for Concurrent WB
+ * @INTR_IDX_PP_CWB2_OVFL: Pingpong overflow interrupt on PP_CWB2/3 for Concurrent WB
  * @INTR_IDX_AUTOREFRESH_DONE:  Autorefresh done for cmd mode panel meaning
  *                              autorefresh has triggered a double buffer flip
  * @INTR_IDX_WRPTR:    Writepointer start interrupt for cmd mode panel
+ * @INTR_IDX_WB_LINEPTR:  Programmable lineptr interrupt for WB
+ * @INTF_IDX_TEAR_DETECT:    Tear detect interrupt
+ * @INTR_IDX_TE_ASSERT:      TE Assert interrupt
+ * @INTR_IDX_TE_DEASSERT:    TE Deassert interrupt
  */
 enum sde_intr_idx {
 	INTR_IDX_VSYNC,
 	INTR_IDX_PINGPONG,
 	INTR_IDX_UNDERRUN,
 	INTR_IDX_CTL_START,
+	INTR_IDX_CTL_DONE,
 	INTR_IDX_RDPTR,
 	INTR_IDX_AUTOREFRESH_DONE,
 	INTR_IDX_WB_DONE,
@@ -223,7 +250,12 @@ enum sde_intr_idx {
 	INTR_IDX_PP4_OVFL,
 	INTR_IDX_PP5_OVFL,
 	INTR_IDX_PP_CWB_OVFL,
+	INTR_IDX_PP_CWB2_OVFL,
 	INTR_IDX_WRPTR,
+	INTR_IDX_WB_LINEPTR,
+	INTF_IDX_TEAR_DETECT,
+	INTR_IDX_TE_ASSERT,
+	INTR_IDX_TE_DEASSERT,
 	INTR_IDX_MAX,
 };
 
@@ -261,8 +293,10 @@ struct sde_encoder_irq {
  * @hw_qdss:		Hardware interface to the qdss registers
  * @cdm_cfg:		Chroma-down hardware configuration
  * @hw_pp:		Hardware interface to the ping pong registers
+ * @hw_dnsc_blur:	Hardware interface to the downscale blur registers
  * @sde_kms:		Pointer to the sde_kms top level
  * @cached_mode:	DRM mode cached at mode_set time, acted on in enable
+ * @wd_jitter : Pointer to watchdog jitter prams
  * @enabled:		Whether the encoder has enabled and running a mode
  * @split_role:		Role to play in a split-panel configuration
  * @intf_mode:		Interface mode
@@ -271,7 +305,7 @@ struct sde_encoder_irq {
  * @intf_cfg_v1:        Interface hardware configuration to be used if control
  *                      path supports SDE_CTL_ACTIVE_CFG
  * @comp_type:      Type of compression supported
- * @comp_ratio:		Compression ratio
+ * @comp_ratio:		Compression ratio multiplied by 100
  * @dsc_extra_pclk_cycle_cnt: Extra pclk cycle count for DSC over DP
  * @dsc_extra_disp_width: Additional display width for DSC over DP
  * @poms_align_vsync:   poms with vsync aligned
@@ -289,6 +323,10 @@ struct sde_encoder_irq {
  *				scheduled. Decremented in irq handler
  * @pending_retire_fence_cnt:   Atomic counter tracking the pending retire
  *                              fences that have to be signalled.
+ * @pending_ctl_start_cnt:      Atomic counter tracking the pending ctl-start-irq,
+ *                              used to release commit thread. Currently managed
+ *                              only for writeback encoder and the counter keeps
+ *                              increasing for other type of encoders.
  * @pending_kickoff_wq:		Wait queue for blocking until kickoff completes
  * @kickoff_timeout_ms:		kickoff timeout in mill seconds
  * @irq:			IRQ tracking structures
@@ -297,9 +335,12 @@ struct sde_encoder_irq {
  * @in_clone_mode		Indicates if encoder is in clone mode ref@CWB
  * @vfp_cached:			cached vertical front porch to be used for
  *				programming ROT and MDP fetch start
+ * @pf_time_in_us:		Programmable fetch time in micro-seconds
  * @frame_trigger_mode:		frame trigger mode indication for command
  *				mode display
  * @recovered:			flag set to true when recovered from pp timeout
+ * @autorefresh_disable_trans:   flag set to true during autorefresh disable transition
+ * @sim_qsync_frame:            Current simulated qsync frame type
  */
 struct sde_encoder_phys {
 	struct drm_encoder *parent;
@@ -313,8 +354,10 @@ struct sde_encoder_phys {
 	struct sde_hw_qdss *hw_qdss;
 	struct sde_hw_cdm_cfg cdm_cfg;
 	struct sde_hw_pingpong *hw_pp;
+	struct sde_hw_dnsc_blur *hw_dnsc_blur;
 	struct sde_kms *sde_kms;
 	struct drm_display_mode cached_mode;
+	struct intf_wd_jitter_params wd_jitter;
 	enum sde_enc_split_role split_role;
 	enum sde_intf_mode intf_mode;
 	enum sde_intf intf_idx;
@@ -336,6 +379,7 @@ struct sde_encoder_phys {
 	atomic_t underrun_cnt;
 	atomic_t pending_kickoff_cnt;
 	atomic_t pending_retire_fence_cnt;
+	atomic_t pending_ctl_start_cnt;
 	wait_queue_head_t pending_kickoff_wq;
 	u32 kickoff_timeout_ms;
 	struct sde_encoder_irq irq[INTR_IDX_MAX];
@@ -343,8 +387,11 @@ struct sde_encoder_phys {
 	bool cont_splash_enabled;
 	bool in_clone_mode;
 	int vfp_cached;
+	u32 pf_time_in_us;
 	enum frame_trigger_mode_type frame_trigger_mode;
 	bool recovered;
+	bool autorefresh_disable_trans;
+	enum sde_sim_qsync_frame sim_qsync_frame;
 };
 
 static inline int sde_encoder_phys_inc_pending(struct sde_encoder_phys *phys)
@@ -393,7 +440,7 @@ struct sde_encoder_phys_cmd_te_timestamp {
  *	mode specific operations
  * @base:	Baseclass physical encoder structure
  * @stream_sel:	Stream selection for multi-stream interfaces
- * @pp_timeout_report_cnt: number of pingpong done irq timeout errors
+ * @frame_tx_timeout_report_cnt: number of pp_done/ctl_done irq timeout errors
  * @autorefresh: autorefresh feature state
  * @pending_vblank_cnt: Atomic counter tracking pending wait for VBLANK
  * @pending_vblank_wq: Wait queue for blocking until VBLANK received
@@ -405,7 +452,7 @@ struct sde_encoder_phys_cmd_te_timestamp {
 struct sde_encoder_phys_cmd {
 	struct sde_encoder_phys base;
 	int stream_sel;
-	int pp_timeout_report_cnt;
+	int frame_tx_timeout_report_cnt;
 	struct sde_encoder_phys_cmd_autorefresh autorefresh;
 	atomic_t pending_vblank_cnt;
 	wait_queue_head_t pending_vblank_wq;
@@ -422,47 +469,41 @@ struct sde_encoder_phys_cmd {
  * @base:		Baseclass physical encoder structure
  * @hw_wb:		Hardware interface to the wb registers
  * @wbdone_timeout:	Timeout value for writeback done in msec
- * @bypass_irqreg:	Bypass irq register/unregister if non-zero
  * @wb_cfg:		Writeback hardware configuration
  * @cdp_cfg:		Writeback CDP configuration
  * @wb_roi:		Writeback region-of-interest
  * @wb_fmt:		Writeback pixel format
  * @wb_fb:		Pointer to current writeback framebuffer
  * @wb_aspace:		Pointer to current writeback address space
- * @cwb_old_fb:		Pointer to old writeback framebuffer
- * @cwb_old_aspace:	Pointer to old writeback address space
- * @frame_count:	Counter of completed writeback operations
- * @kickoff_count:	Counter of issued writeback operations
+ * @old_fb:		Pointer to old writeback framebuffer
+ * @old_aspace:		Pointer to old writeback address space
  * @aspace:		address space identifier for non-secure/secure domain
  * @wb_dev:		Pointer to writeback device
- * @start_time:		Start time of writeback latest request
- * @end_time:		End time of writeback latest request
  * @bo_disable:		Buffer object(s) to use during the disabling state
  * @fb_disable:		Frame buffer to use during the disabling state
- * @crtc		Pointer to drm_crtc
+ * @sc_cfg:		Stores wb system cache config
+ * @crtc:		Pointer to drm_crtc
+ * @prog_line:		Cached programmable line value used to trigger early wb-fence
  */
 struct sde_encoder_phys_wb {
 	struct sde_encoder_phys base;
 	struct sde_hw_wb *hw_wb;
 	u32 wbdone_timeout;
-	u32 bypass_irqreg;
 	struct sde_hw_wb_cfg wb_cfg;
 	struct sde_hw_wb_cdp_cfg cdp_cfg;
 	struct sde_rect wb_roi;
 	const struct sde_format *wb_fmt;
 	struct drm_framebuffer *wb_fb;
 	struct msm_gem_address_space *wb_aspace;
-	struct drm_framebuffer *cwb_old_fb;
-	struct msm_gem_address_space *cwb_old_aspace;
-	u32 frame_count;
-	u32 kickoff_count;
+	struct drm_framebuffer *old_fb;
+	struct msm_gem_address_space *old_aspace;
 	struct msm_gem_address_space *aspace[SDE_IOMMU_DOMAIN_MAX];
 	struct sde_wb_device *wb_dev;
-	ktime_t start_time;
-	ktime_t end_time;
 	struct drm_gem_object *bo_disable[SDE_MAX_PLANES];
 	struct drm_framebuffer *fb_disable;
+	struct sde_hw_wb_sc_cfg sc_cfg;
 	struct drm_crtc *crtc;
+	u32 prog_line;
 };
 
 /**
@@ -693,6 +734,13 @@ void sde_encoder_helper_split_config(
  */
 int sde_encoder_helper_reset_mixers(struct sde_encoder_phys *phys_enc,
 		struct drm_framebuffer *fb);
+/**
+ * sde_encoder_helper_hw_fence_sw_override - reset mixers and do hw-fence sw override
+ * @phys_enc: Pointer to physical encoder structure
+ * @ctl: Pointer to hw_ctl structure
+ */
+void sde_encoder_helper_hw_fence_sw_override(struct sde_encoder_phys *phys_enc,
+		struct sde_hw_ctl *ctl);
 
 /**
  * sde_encoder_helper_report_irq_timeout - utility to report error that irq has
@@ -740,6 +788,14 @@ int sde_encoder_helper_unregister_irq(struct sde_encoder_phys *phys_enc,
  */
 void sde_encoder_helper_update_intf_cfg(
 		struct sde_encoder_phys *phys_enc);
+
+/**
+ * sde_encoder_restore_tearcheck_rd_ptr - restore interface rd_ptr configuration
+ *	This function reads the panel scan line value using a DCS command
+ *	and overrides the internal interface read pointer configuration.
+ * @phys_enc: Pointer to physical encoder structure
+ */
+void sde_encoder_restore_tearcheck_rd_ptr(struct sde_encoder_phys *phys_enc);
 
 /**
  * _sde_encoder_phys_is_dual_ctl - check if encoder needs dual ctl path.
@@ -805,6 +861,17 @@ static inline bool sde_encoder_phys_needs_single_flush(
 	return (_sde_encoder_phys_is_ppsplit(phys_enc) ||
 				!_sde_encoder_phys_is_dual_ctl(phys_enc));
 }
+
+/**
+ * sde_encoder_helper_hw_fence_extended_wait - extended kickoff wait for hw-fence enabled case
+ * @phys_enc:	Pointer to physical encoder structure
+ * @ctl:	Pointer to hw ctl structure
+ * @wait_info:	Pointer to wait_info structure
+ * @wait_type:	Enum indicating the irq to wait for
+ * Returns:	-ETIMEDOUT in the case that the extended wait times out, 0 otherwise
+ */
+int sde_encoder_helper_hw_fence_extended_wait(struct sde_encoder_phys *phys_enc,
+	struct sde_hw_ctl *ctl, struct sde_encoder_wait_info *wait_info, int wait_type);
 
 /**
  * sde_encoder_helper_phys_disable - helper function to disable virt encoder

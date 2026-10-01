@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -20,13 +21,28 @@
 #include "msm_gem.h"
 #include "msm_mmu.h"
 #include "msm_kms.h"
+#include <linux/module.h>
 
 #include <drm/drm_drv.h>
 
 #include <linux/qcom-dma-mapping.h>
 #include <linux/dma-buf.h>
+#include <linux/version.h>
+#include <linux/mem-buf.h>
+#include <soc/qcom/secure_buffer.h>
+#if (KERNEL_VERSION(6, 1, 0) <= LINUX_VERSION_CODE)
+#include <linux/qti-smmu-proxy-callbacks.h>
+#elif (KERNEL_VERSION(5, 15, 0) > LINUX_VERSION_CODE)
 #include <linux/ion.h>
 #include <linux/msm_ion.h>
+#endif
+
+struct msm_gem_prime_vmid_flags {
+	bool is_tvm;
+	bool is_cp_pixel;
+	bool is_sec_display;
+	bool is_cam_preview;
+};
 
 struct sg_table *msm_gem_prime_get_sg_table(struct drm_gem_object *obj)
 {
@@ -39,12 +55,32 @@ struct sg_table *msm_gem_prime_get_sg_table(struct drm_gem_object *obj)
 	return drm_prime_pages_to_sg(obj->dev, msm_obj->pages, npages);
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+int msm_gem_prime_vmap(struct drm_gem_object *obj, struct iosys_map *map)
+{
+	map->vaddr = msm_gem_get_vaddr(obj);
+	return IS_ERR_OR_NULL(map->vaddr);
+}
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+int msm_gem_prime_vmap(struct drm_gem_object *obj, struct dma_buf_map *map)
+{
+	map->vaddr = msm_gem_get_vaddr(obj);
+	return IS_ERR_OR_NULL(map->vaddr);
+}
+#else
 void *msm_gem_prime_vmap(struct drm_gem_object *obj)
 {
 	return msm_gem_get_vaddr(obj);
 }
+#endif
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+void msm_gem_prime_vunmap(struct drm_gem_object *obj, struct iosys_map *map)
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+void msm_gem_prime_vunmap(struct drm_gem_object *obj, struct dma_buf_map *map)
+#else
 void msm_gem_prime_vunmap(struct drm_gem_object *obj, void *vaddr)
+#endif
 {
 	msm_gem_put_vaddr(obj);
 }
@@ -79,13 +115,49 @@ void msm_gem_prime_unpin(struct drm_gem_object *obj)
 		msm_gem_put_pages(obj);
 }
 
-struct dma_resv *msm_gem_prime_res_obj(struct drm_gem_object *obj)
+static int msm_gem_prime_get_vmid_flags(struct dma_buf *dma_buf, struct msm_kms *kms,
+					struct msm_gem_prime_vmid_flags *vmid_flags,
+					unsigned long *dma_map_attrs)
 {
-	struct msm_gem_object *msm_obj = to_msm_bo(obj);
+	int *vmid_list, *perms_list;
+	int nelems = 0, ret = 0, i;
 
-	return msm_obj->resv;
+	ret = mem_buf_dma_buf_copy_vmperm(dma_buf, &vmid_list, &perms_list, &nelems);
+	if (ret) {
+		DRM_ERROR("get vmid list failure, ret:%d", ret);
+		return ret;
+	}
+
+	for (i = 0; i < nelems; i++) {
+#if (KERNEL_VERSION(6, 1, 0) <= LINUX_VERSION_CODE)
+		/* avoid VMID checks in trusted-vm, set flag in HLOS when only VMID_TVM is set */
+		if ((vmid_list[i] == VMID_TVM) &&
+				(!kms->funcs->in_trusted_vm || !kms->funcs->in_trusted_vm(kms))) {
+			vmid_flags->is_tvm = true;
+			*dma_map_attrs = DMA_ATTR_QTI_SMMU_PROXY_MAP;
+		}
+#endif
+		if (vmid_list[i] == VMID_CP_PIXEL) {
+			vmid_flags->is_cp_pixel = true;
+			vmid_flags->is_tvm = false;
+			*dma_map_attrs = 0;
+			break;
+		} else if (vmid_list[i] == VMID_CP_CAMERA_PREVIEW) {
+			vmid_flags->is_cam_preview = true;
+			break;
+		} else if (vmid_list[i] == VMID_CP_SEC_DISPLAY) {
+			vmid_flags->is_sec_display = true;
+			break;
+		}
+
+	}
+
+	/* mem_buf_dma_buf_copy_vmperm uses kmemdup, do kfree to free up the memory */
+	kfree(vmid_list);
+	kfree(perms_list);
+
+	return ret;
 }
-
 
 struct drm_gem_object *msm_gem_prime_import(struct drm_device *dev,
 					    struct dma_buf *dma_buf)
@@ -96,9 +168,10 @@ struct drm_gem_object *msm_gem_prime_import(struct drm_device *dev,
 	struct device *attach_dev = NULL;
 	struct msm_drm_private *priv;
 	struct msm_kms *kms;
-	int ret;
+	struct msm_gem_prime_vmid_flags vmid_flags = {0};
 	bool lazy_unmap = true;
-	u32 domain;
+	int ret;
+	unsigned long dma_map_attrs = 0;
 
 	if (!dma_buf || !dev->dev_private)
 		return ERR_PTR(-EINVAL);
@@ -131,18 +204,22 @@ struct drm_gem_object *msm_gem_prime_import(struct drm_device *dev,
 		goto fail_put;
 	}
 
+	ret = msm_gem_prime_get_vmid_flags(dma_buf, kms, &vmid_flags, &dma_map_attrs);
+	if (ret)
+		goto fail_put;
+
 	/*
-	 * - attach default drm device for all S2 only buffers or
-	 *   when IOMMU is not available
-	 * - avoid using lazying unmap feature as it doesn't add
-	 * any value without nested translations
+	 * - attach default drm device for VMID_TVM-only or when IOMMU is not available
+	 * - avoid using lazy unmap feature as it doesn't add value without nested translations
 	 */
-	if (!iommu_present(&platform_bus_type)) {
+	if (vmid_flags.is_cp_pixel) {
+		attach_dev = kms->funcs->get_address_space_device(kms, MSM_SMMU_DOMAIN_SECURE);
+	} else if (!iommu_present(&platform_bus_type) || vmid_flags.is_tvm
+		   || vmid_flags.is_cam_preview || vmid_flags.is_sec_display) {
 		attach_dev = dev->dev;
 		lazy_unmap = false;
 	} else {
-		domain = MSM_SMMU_DOMAIN_UNSECURE;
-		attach_dev = kms->funcs->get_address_space_device(kms, domain);
+		attach_dev = kms->funcs->get_address_space_device(kms, MSM_SMMU_DOMAIN_UNSECURE);
 	}
 
 	/*
@@ -170,12 +247,28 @@ struct drm_gem_object *msm_gem_prime_import(struct drm_device *dev,
 	 */
 	if (lazy_unmap)
 		attach->dma_map_attrs |= DMA_ATTR_DELAYED_UNMAP;
-	sgt = dma_buf_map_attachment(attach, DMA_BIDIRECTIONAL);
-	if (IS_ERR(sgt)) {
-		ret = PTR_ERR(sgt);
-		DRM_ERROR(
-		"dma_buf_map_attachment failure, err=%d\n", ret);
-		goto fail_detach;
+
+	attach->dma_map_attrs |= dma_map_attrs;
+
+	/*
+	 * avoid map_attachment for S2-only buffers and TVM buffers as it needs to be mapped
+	 * after the SID switch scm_call and will be handled during msm_gem_get_dma_addr
+	 */
+	if (!vmid_flags.is_tvm && !vmid_flags.is_cam_preview && !vmid_flags.is_sec_display) {
+
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+		sgt = dma_buf_map_attachment_unlocked(attach, DMA_BIDIRECTIONAL);
+#else
+		sgt = dma_buf_map_attachment(attach, DMA_BIDIRECTIONAL);
+#endif
+		if (IS_ERR(sgt)) {
+			ret = PTR_ERR(sgt);
+			DRM_ERROR("dma_buf_map_attachment failure, err=%d\n", ret);
+			goto fail_detach;
+		}
+	} else {
+		DRM_DEBUG("deferring dma_buf_map_attachment; tvm:%d, sec_cam:%d, sec_disp:%d\n",
+			   vmid_flags.is_tvm, vmid_flags.is_cam_preview, vmid_flags.is_sec_display);
 	}
 
 	/*
@@ -195,7 +288,12 @@ struct drm_gem_object *msm_gem_prime_import(struct drm_device *dev,
 
 fail_unmap:
 	if (sgt)
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+		dma_buf_unmap_attachment_unlocked(attach, sgt, DMA_BIDIRECTIONAL);
+#else
 		dma_buf_unmap_attachment(attach, sgt, DMA_BIDIRECTIONAL);
+#endif
+
 fail_detach:
 	dma_buf_detach(dma_buf, attach);
 fail_put:
@@ -203,3 +301,7 @@ fail_put:
 
 	return ERR_PTR(ret);
 }
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+MODULE_IMPORT_NS(DMA_BUF);
+#endif

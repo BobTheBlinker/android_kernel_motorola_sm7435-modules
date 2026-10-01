@@ -1,14 +1,18 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _DP_AUX_H_
 #define _DP_AUX_H_
 
 #include "dp_catalog.h"
-#include "drm/drm_dp_helper.h"
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+#include <drm/display/drm_dp_helper.h>
+#else
+#include <drm/drm_dp_helper.h>
+#endif
 #include "dp_aux_bridge.h"
 
 #define DP_STATE_NOTIFICATION_SENT          BIT(0)
@@ -41,28 +45,26 @@ struct dp_aux {
 
 	bool read;
 
-	int dp_aux_switch_enable_gpio;
-	int dp_aux_switch_flip_gpio;
-
 	struct mutex *access_lock;
 	void *ipc_log_context;
 
 	struct drm_dp_aux *drm_aux;
-	int (*drm_aux_register)(struct dp_aux *aux);
+	int (*drm_aux_register)(struct dp_aux *aux, struct drm_device *drm_dev);
 	void (*drm_aux_deregister)(struct dp_aux *aux);
 	void (*isr)(struct dp_aux *aux);
 	void (*init)(struct dp_aux *aux, struct dp_aux_cfg *aux_cfg);
 	void (*deinit)(struct dp_aux *aux);
 	void (*reconfig)(struct dp_aux *aux);
 	void (*abort)(struct dp_aux *aux, bool abort);
-	void (*set_sim_mode)(struct dp_aux *aux,
-		struct dp_aux_bridge *sim_bridge);
-	int (*aux_switch)(struct dp_aux *aux, bool enable, int orientation);
+	void (*set_sim_mode)(struct dp_aux *aux, struct dp_aux_bridge *sim_bridge);
+	int (*switch_configure)(struct dp_aux *aux, bool enable, int orientation);
+	int (*switch_register_notifier)(struct notifier_block *nb, struct device_node *node);
+	int (*switch_unregister_notifier)(struct notifier_block *nb, struct device_node *node);
 };
 
 struct dp_aux *dp_aux_get(struct device *dev, struct dp_catalog_aux *catalog,
 		struct dp_parser *parser, struct device_node *aux_switch,
-		struct dp_aux_bridge *aux_bridge);
+		struct dp_aux_bridge *aux_bridge, void *ipc_log_context);
 void dp_aux_put(struct dp_aux *aux);
 
 #endif /*__DP_AUX_H_*/

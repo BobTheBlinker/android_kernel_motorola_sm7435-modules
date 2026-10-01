@@ -1,15 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
 #ifndef SDE_DBG_H_
 #define SDE_DBG_H_
 
-#include <stdarg.h>
+#include <linux/stdarg.h>
 #include <linux/debugfs.h>
 #include <linux/list.h>
 #include <soc/qcom/minidump.h>
+#include <drm/drm_print.h>
 
 /* select an uncommon hex value for the limiter */
 #define SDE_EVTLOG_DATA_LIMITER	(0xC0DEBEEF)
@@ -28,6 +30,11 @@
 #define SDE_EVTLOG_PANIC	0xdead
 #define SDE_EVTLOG_FATAL	0xbad
 #define SDE_EVTLOG_ERROR	0xebad
+
+#define SDE_EVTLOG_H32(val) (val >> 32)
+#define SDE_EVTLOG_L32(val) (val & 0xffffffff)
+
+#define LUTDMA_DBG_NAME "reg_dma"
 
 /* flags to enable the HW block dumping */
 #define SDE_DBG_SDE		BIT(0)
@@ -65,6 +72,7 @@ enum sde_dbg_dump_flag {
 	SDE_DBG_DUMP_IN_LOG = BIT(0),
 	SDE_DBG_DUMP_IN_MEM = BIT(1),
 	SDE_DBG_DUMP_IN_LOG_LIMITED = BIT(2),
+	SDE_DBG_DUMP_IN_COREDUMP = BIT(3),
 };
 
 enum sde_dbg_dump_context {
@@ -73,7 +81,12 @@ enum sde_dbg_dump_context {
 	SDE_DBG_DUMP_CLK_ENABLED_CTX,
 };
 
-/* default dump mode for eventlogs, reg-dump & debugbus-dump */
+/*
+ * Set in_coredump as default mode. Any existing script which rely on
+ * dump_mode to be in_mem should now explicitly run the cmd
+ * "adb shell echo 2 > /sys/kernel/debug/dri/0/debug/reg_dump" before
+ * doing the test cases.
+ */
 #define SDE_DBG_DEFAULT_DUMP_MODE	SDE_DBG_DUMP_IN_MEM
 
 /*
@@ -152,12 +165,14 @@ struct sde_dbg_evtlog_log {
 struct sde_dbg_evtlog {
 	struct sde_dbg_evtlog_log logs[SDE_EVTLOG_ENTRY];
 	u32 first;
-	atomic_t last;
+	u32 last;
 	u32 last_dump;
 	atomic_t curr;
 	u32 next;
 	u32 enable;
 	u32 dump_mode;
+	char *dumped_evtlog;
+	u32 log_size;
 	spinlock_t spin_lock;
 	struct list_head filter_list;
 };
@@ -338,11 +353,24 @@ void sde_evtlog_log(struct sde_dbg_evtlog *evtlog, const char *name, int line,
 void sde_reglog_log(u8 blk_id, u32 val, u32 addr);
 
 /**
- * sde_evtlog_dump_all - print all entries in event log to kernel log
+ * sde_evtlog_dump_to_buffer - parse one line of evtlog to a given buffer
  * @evtlog:	pointer to evtlog
- * Returns:	none
+ * @evtlog_buf: buffer to store evtlog
+ * @evtlog_buf_size: lenght of the buffer
+ * @update_last_entry: whether update last dump marker
+ * @full_dump: 1, print the whole evtlog captured; 0, print last 256 lines of log
+ * Returns:	log size
  */
-void sde_evtlog_dump_all(struct sde_dbg_evtlog *evtlog);
+ssize_t sde_evtlog_dump_to_buffer(struct sde_dbg_evtlog *evtlog,
+		char *evtlog_buf, ssize_t evtlog_buf_size,
+		bool update_last_entry, bool full_dump);
+
+/**
+ * sde_evtlog_count - count the current log size for print
+ * @evtlog:	pointer to evtlog
+ * Returns:	log size
+ */
+u32 sde_evtlog_count(struct sde_dbg_evtlog *evtlog);
 
 /**
  * sde_evtlog_is_enabled - check whether log collection is enabled for given
@@ -368,9 +396,9 @@ ssize_t sde_evtlog_dump_to_buffer(struct sde_dbg_evtlog *evtlog,
 
 /**
  * sde_dbg_init_dbg_buses - initialize debug bus dumping support for the chipset
- * @hwversion:		Chipset revision
+ * @hw_rev:		Chipset revision
  */
-void sde_dbg_init_dbg_buses(u32 hwversion);
+void sde_dbg_init_dbg_buses(u32 hw_rev);
 
 /**
  * sde_dbg_init - initialize global sde debug facilities: evtlog, regdump
@@ -514,5 +542,14 @@ static inline void sde_rsc_debug_dump(u32 mux_sel)
  */
 void sde_rsc_debug_dump(u32 mux_sel);
 #endif
+
+/**
+ * sde_dbg_update_dump_mode - update dump mode to in_coredump mode if devcoredump
+ *  fueature is enabled. Default dump mode is in_mem, if HW recovery feature is
+ *  enabled, this function will be called to set dump mode to in_coredump option.
+ * @enable_coredump: if enable_coredump is true, update dump mode to in_coredump,
+ *	otherwise reset the dump mode to default mode.
+ */
+void sde_dbg_update_dump_mode(bool enable_coredump);
 
 #endif /* SDE_DBG_H_ */

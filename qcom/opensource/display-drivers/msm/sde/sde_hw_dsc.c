@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
  */
 
+#define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 #include "sde_hw_mdss.h"
 #include "sde_hwio.h"
 #include "sde_hw_catalog.h"
@@ -193,7 +195,7 @@ static struct sde_dsc_cfg *_dsc_offset(enum sde_dsc dsc,
 			b->base_off = addr;
 			b->blk_off = m->dsc[i].base;
 			b->length = m->dsc[i].len;
-			b->hwversion = m->hwversion;
+			b->hw_rev = m->hw_rev;
 			b->log_mask = SDE_DBG_MASK_DSC;
 			return &m->dsc[i];
 		}
@@ -212,29 +214,21 @@ static void _setup_dsc_ops(struct sde_hw_dsc_ops *ops,
 		ops->bind_pingpong_blk = sde_hw_dsc_bind_pingpong_blk;
 };
 
-static struct sde_hw_blk_ops sde_hw_ops = {
-	.start = NULL,
-	.stop = NULL,
-};
-
-struct sde_hw_dsc *sde_hw_dsc_init(enum sde_dsc idx,
+struct sde_hw_blk_reg_map *sde_hw_dsc_init(enum sde_dsc idx,
 		void __iomem *addr,
 		struct sde_mdss_cfg *m)
 {
 	struct sde_hw_dsc *c;
 	struct sde_dsc_cfg *cfg;
 	u32 dsc_ctl_offset;
-	int rc = -EINVAL;
 
 	c = kzalloc(sizeof(*c), GFP_KERNEL);
 	if (!c)
 		return ERR_PTR(-ENOMEM);
 
 	cfg = _dsc_offset(idx, m, addr, &c->hw);
-	if (IS_ERR_OR_NULL(cfg)) {
-		kfree(c);
-		return ERR_PTR(-EINVAL);
-	}
+	if (IS_ERR_OR_NULL(cfg))
+		goto error_inv;
 
 	c->idx = idx;
 	c->caps = cfg;
@@ -286,28 +280,19 @@ struct sde_hw_dsc *sde_hw_dsc_init(enum sde_dsc idx,
 				c->hw.xin_id);
 	} else {
 		SDE_ERROR("failed to setup ops\n");
-		goto blk_init_error;
+		goto error_inv;
 	}
 
-	rc = sde_hw_blk_init(&c->base, SDE_HW_BLK_DSC, idx, &sde_hw_ops);
-	if (rc) {
-		SDE_ERROR("failed to init hw blk %d\n", rc);
-		goto blk_init_error;
-	}
+	return &c->hw;
 
-
-
-	return c;
-
-blk_init_error:
+error_inv:
 	kfree(c);
 
-	return ERR_PTR(rc);
+	return ERR_PTR(-EINVAL);
 }
 
-void sde_hw_dsc_destroy(struct sde_hw_dsc *dsc)
+void sde_hw_dsc_destroy(struct sde_hw_blk_reg_map *hw)
 {
-	if (dsc)
-		sde_hw_blk_destroy(&dsc->base);
-	kfree(dsc);
+	if (hw)
+		kfree(to_sde_hw_dsc(hw));
 }

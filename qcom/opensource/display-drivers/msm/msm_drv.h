@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023, 2025 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -38,7 +38,8 @@
 #include <linux/sde_vm_event.h>
 #include <linux/sizes.h>
 #include <linux/kthread.h>
-#include <linux/notifier.h>
+#include <linux/version.h>
+#include <linux/delay.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
@@ -48,8 +49,13 @@
 #include <drm/sde_drm.h>
 #include <drm/drm_file.h>
 #include <drm/drm_gem.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+#include <drm/display/drm_dsc.h>
+#else
 #include <drm/drm_dsc.h>
+#endif
 #include <drm/drm_bridge.h>
+#include <drm/drm_framebuffer.h>
 
 #include "sde_power_handle.h"
 
@@ -85,6 +91,8 @@ struct msm_gem_vma;
 
 #define TEARDOWN_DEADLOCK_RETRY_MAX 5
 
+#define DISP_DEV_ERR(dev, fmt, ...) dev_err(dev, "[%s:%d] " fmt, __func__, __LINE__, ##__VA_ARGS__)
+
 struct msm_file_private {
 	rwlock_t queuelock;
 	struct list_head submitqueues;
@@ -115,6 +123,8 @@ enum msm_mdp_plane_property {
 	PLANE_PROP_DMA_GC,
 	PLANE_PROP_FP16_GC,
 	PLANE_PROP_FP16_CSC,
+	PLANE_PROP_UBWC_STATS_ROI,
+	PLANE_PROP_UCSC_CSC,
 
 	/* # of blob properties */
 	PLANE_PROP_BLOBCOUNT,
@@ -138,17 +148,17 @@ enum msm_mdp_plane_property {
 	PLANE_PROP_INVERSE_PMA,
 	PLANE_PROP_FP16_IGC,
 	PLANE_PROP_FP16_UNMULT,
-	PLANE_PROP_UBWC_STATS_ROI,
-	PLANE_PROP_BG_ALPHA,
+	PLANE_PROP_UCSC_UNMULT,
+	PLANE_PROP_UCSC_ALPHA_DITHER,
 
 	/* enum/bitmask properties */
 	PLANE_PROP_BLEND_OP,
 	PLANE_PROP_SRC_CONFIG,
 	PLANE_PROP_FB_TRANSLATION_MODE,
 	PLANE_PROP_MULTIRECT_MODE,
-	PLANE_PROP_SYS_CACHE_TYPE,
-	PLANE_PROP_BUFFER_MODE,
-	PLANE_PROP_COLOR_COMPONENT,
+	PLANE_PROP_UCSC_IGC,
+	PLANE_PROP_UCSC_GC,
+
 
 	/* total # of properties */
 	PLANE_PROP_COUNT
@@ -204,6 +214,7 @@ enum msm_mdp_conn_property {
 	CONNECTOR_PROP_HDR_METADATA,
 	CONNECTOR_PROP_DEMURA_PANEL_ID,
 	CONNECTOR_PROP_DIMMING_BL_LUT,
+	CONNECTOR_PROP_DNSC_BLUR,
 
 	/* # of blob properties */
 	CONNECTOR_PROP_BLOBCOUNT,
@@ -223,6 +234,9 @@ enum msm_mdp_conn_property {
 	CONNECTOR_PROP_DYN_BIT_CLK,
 	CONNECTOR_PROP_DIMMING_CTRL,
 	CONNECTOR_PROP_DIMMING_MIN_BL,
+	CONNECTOR_PROP_EARLY_FENCE_LINE,
+	CONNECTOR_PROP_DYN_TRANSFER_TIME,
+	CONNECTOR_PROP_BRIGHTNESS,
 
 	/* enum/bitmask properties */
 	CONNECTOR_PROP_TOPOLOGY_NAME,
@@ -233,23 +247,21 @@ enum msm_mdp_conn_property {
 	CONNECTOR_PROP_QSYNC_MODE,
 	CONNECTOR_PROP_CMD_FRAME_TRIGGER_MODE,
 	CONNECTOR_PROP_SET_PANEL_MODE,
-	CONNECTOR_PROP_AVR_STEP,
+	CONNECTOR_PROP_AVR_STEP_STATE,
+	CONNECTOR_PROP_EPT,
+	CONNECTOR_PROP_EPT_FPS,
+	CONNECTOR_PROP_CACHE_STATE,
 	CONNECTOR_PROP_DSC_MODE,
-	CONNECTOR_PROP_WB_FSC_MODE,
+	CONNECTOR_PROP_WB_USAGE_TYPE,
+	CONNECTOR_PROP_WB_ROT_TYPE,
+	CONNECTOR_PROP_WB_ROT_BYTES_PER_CLK,
 
-	/* MOT feature panel*/
-	CONNECTOR_PROP_HBM,
-	CONNECTOR_PROP_CABC,
-	CONNECTOR_PROP_ACL,
-	CONNECTOR_PROP_DC,
-	CONNECTOR_PROP_COLOR,
 	/* total # of properties */
 	CONNECTOR_PROP_COUNT
 };
 
 #define MSM_GPU_MAX_RINGS 4
 #define MAX_H_TILES_PER_DISPLAY 2
-#define MSM_DISP_NAME_LEN_MAX  128
 
 /**
  * enum msm_display_compression_type - compression method used for pixel stream
@@ -263,8 +275,23 @@ enum msm_display_compression_type {
 	MSM_DISPLAY_COMPRESSION_VDC
 };
 
-#define MSM_DISPLAY_COMPRESSION_RATIO_NONE 1
-#define MSM_DISPLAY_COMPRESSION_RATIO_MAX 5
+/**
+ * enum msm_display_wd_jitter_type - Type of WD jitter used
+ * @MSM_DISPLAY_WD_JITTER_NONE:      No WD timer jitter enabled
+ * @MSM_DISPLAY_WD_INSTANTANEOUS_JITTER:  Instantaneous WD jitter enabled
+ * @MSM_DISPLAY_WD_LTJ_JITTER:       LTJ WD jitter enabled
+ */
+enum msm_display_wd_jitter_type {
+	MSM_DISPLAY_WD_JITTER_NONE = BIT(0),
+	MSM_DISPLAY_WD_INSTANTANEOUS_JITTER = BIT(1),
+	MSM_DISPLAY_WD_LTJ_JITTER = BIT(2),
+};
+
+/*
+ * Scale macros so that compression ratio is a factor of 100 everywhere
+ */
+#define MSM_DISPLAY_COMPRESSION_RATIO_NONE 100
+#define MSM_DISPLAY_COMPRESSION_RATIO_MAX 500
 
 /**
  * enum msm_display_spr_pack_type - sub pixel rendering pack patterns supported
@@ -334,16 +361,6 @@ enum msm_display_dsc_mode {
 	MSM_DISPLAY_DSC_MODE_NONE,
 	MSM_DISPLAY_DSC_MODE_ENABLED,
 	MSM_DISPLAY_DSC_MODE_DISABLED,
-};
-
-/**
- * enum msm_wb_fsc_mode - wb fsc mode
- * @MSM_WB_FSC_MODE_DISABLED: fsc disabled
- * @MSM_WB_FSC_MODE_DISABLED: fsc enabled
- */
-enum msm_wb_dump_mode {
-	MSM_WB_FSC_MODE_DISABLED,
-	MSM_WB_FSC_MODE_ENABLED,
 };
 
 /**
@@ -422,28 +439,6 @@ struct msm_roi_caps {
 	struct msm_roi_alignment align;
 };
 
-enum msm_param_state {
-	PARAM_STATE_OFF = 0,
-	PARAM_STATE_ON,
-	PARAM_STATE_NUM,
-	PARAM_STATE_DISABLE = 0xFFFF,
-};
-
-enum msm_param_id {
-	PARAM_HBM_ID = 0,
-	PARAM_CABC_ID,
-	PARAM_ACL_ID,
-	PARAM_DC_ID,
-	PARAM_COLOR_ID,
-	PARAM_ID_NUM
-};
-
-struct msm_param_info {
-	enum msm_param_id param_idx;
-	enum msm_mdp_conn_property param_conn_idx;
-	int value;
-};
-
 /**
  * struct msm_display_dsc_info - defines dsc configuration
  * @config                   DSC encoder configuration
@@ -456,7 +451,6 @@ struct msm_param_info {
  * @pclk_per_line:           Compressed width.
  * @slice_last_group_size:   Size of last group in pixels.
  * @slice_per_pkt:           Number of slices per packet.
- * @dsc_pic_width_slice:     Number of DSC picture width slice.
  * @num_active_ss_per_enc:   Number of active soft slices per encoder.
  * @source_color_space:      Source color space of DSC encoder
  * @chroma_format:           Chroma_format of DSC encoder.
@@ -482,7 +476,6 @@ struct msm_display_dsc_info {
 	int pclk_per_line;
 	int slice_last_group_size;
 	int slice_per_pkt;
-	int dsc_pic_width_slice;
 	int num_active_ss_per_enc;
 	int source_color_space;
 	int chroma_format;
@@ -493,7 +486,6 @@ struct msm_display_dsc_info {
 	u32 dsc_4hsmerge_padding;
 	u32 dsc_4hsmerge_alignment;
 	bool half_panel_pu;
-	bool dsc_novatek_ic;
 };
 
 
@@ -732,10 +724,16 @@ struct msm_display_vdc_info {
 #define DSC_BPP(config) ((config).bits_per_pixel >> 4)
 
 /**
+ * Bits/component
+ * returns the integer bpc value from the drm_dsc_config struct
+ */
+#define DSC_BPC(config) ((config).bits_per_component)
+
+/**
  * struct msm_compression_info - defined panel compression
  * @enabled:          enabled/disabled
  * @comp_type:        type of compression supported
- * @comp_ratio:       compression ratio
+ * @comp_ratio:       compression ratio multiplied by 100
  * @src_bpp:          bits per pixel before compression
  * @tgt_bpp:          bits per pixel after compression
  * @dsc_info:         dsc configuration if the compression
@@ -786,6 +784,24 @@ struct msm_dyn_clk_list {
 };
 
 /**
+ * struct msm_display_wd_jitter_config - defines jitter properties for WD timer
+ * @jitter_type:        Type of WD jitter enabled.
+ * @inst_jitter_numer:  Instantaneous jitter numerator.
+ * @inst_jitter_denom:  Instantaneous jitter denominator.
+ * @ltj_max_numer:      LTJ max numerator.
+ * @ltj_max_denom:      LTJ max denominator.
+ * @ltj_time_sec:       LTJ time in seconds.
+ */
+struct msm_display_wd_jitter_config {
+	enum msm_display_wd_jitter_type jitter_type;
+	u32 inst_jitter_numer;
+	u32 inst_jitter_denom;
+	u32 ltj_max_numer;
+	u32 ltj_max_denom;
+	u32 ltj_time_sec;
+};
+
+/**
  * struct msm_mode_info - defines all msm custom mode info
  * @frame_rate:      frame_rate of the mode
  * @vtotal:          vtotal calculated for the mode
@@ -801,10 +817,17 @@ struct msm_dyn_clk_list {
  * @panel_mode_caps   panel mode capabilities
  * @mdp_transfer_time_us   Specifies the mdp transfer time for command mode
  *                         panels in microseconds.
+ * @mdp_transfer_time_us_min   Specifies the minimum possible mdp transfer time
+ *                             for command mode panels in microseconds.
+ * @mdp_transfer_time_us_max   Specifies the maximum possible mdp transfer time
+ *                             for command mode panels in microseconds.
  * @allowed_mode_switches: bit mask to indicate supported mode switch.
  * @disable_rsc_solver: Dynamically disable RSC solver for the timing mode due to lower bitclk rate.
  * @dyn_clk_list: List of dynamic clock rates for RFI.
  * @qsync_min_fps: qsync min fps rate
+ * @avr_step_fps: AVR step fps rate
+ * @wd_jitter:         Info for WD jitter.
+ * @vpadding:        panel stacking height
  */
 struct msm_mode_info {
 	uint32_t frame_rate;
@@ -820,28 +843,37 @@ struct msm_mode_info {
 	bool wide_bus_en;
 	u32 panel_mode_caps;
 	u32 mdp_transfer_time_us;
-	u64 allowed_mode_switches;
+	u32 mdp_transfer_time_us_min;
+	u32 mdp_transfer_time_us_max;
+	u32 allowed_mode_switches;
 	bool disable_rsc_solver;
 	struct msm_dyn_clk_list dyn_clk_list;
 	u32 qsync_min_fps;
+	u32 avr_step_fps;
+	struct msm_display_wd_jitter_config wd_jitter;
+	u32 vpadding;
 };
 
 /**
  * struct msm_resource_caps_info - defines hw resources
+ * @num_lm_in_use       number of layer mixers allocated to a specified encoder
  * @num_lm              number of layer mixers available
  * @num_dsc             number of dsc available
  * @num_vdc             number of vdc available
  * @num_ctl             number of ctl available
  * @num_3dmux           number of 3d mux available
  * @max_mixer_width:    max width supported by layer mixer
+ * @merge_3d_mask:      bitmap of available 3d mux resource
  */
 struct msm_resource_caps_info {
+	uint32_t num_lm_in_use;
 	uint32_t num_lm;
 	uint32_t num_dsc;
 	uint32_t num_vdc;
 	uint32_t num_ctl;
 	uint32_t num_3dmux;
 	uint32_t max_mixer_width;
+	unsigned long merge_3d_mask;
 };
 
 /**
@@ -852,10 +884,6 @@ struct msm_resource_caps_info {
  * @h_tile_instance:    Controller instance used per tile. Number of elements is
  *                      based on num_of_h_tiles
  * @is_connected:       Set to true if display is connected
- * @panel_id
- * @panel_ver
- * @panel_regDA
- * @panel_name[MSM_DISP_NAME_LEN_MAX];
  * @width_mm:           Physical width
  * @height_mm:          Physical height
  * @max_width:          Max width of display. In case of hot pluggable display
@@ -868,9 +896,9 @@ struct msm_resource_caps_info {
  *				 used instead of panel TE in cmd mode panels
  * @poms_align_vsync:   poms with vsync aligned
  * @roi_caps:           Region of interest capability info
- * @qsync_min_fps	Minimum fps supported by Qsync feature
+ * @qsync_min_fps      Minimum fps supported by Qsync feature
  * @has_qsync_min_fps_list True if dsi-supported-qsync-min-fps-list exits
- * @has_avr_step_req    Panel has defined requirement for AVR steps
+ * @avr_step_fps        AVR step fps supported
  * @te_source		vsync source pin information
  * @dsc_count:		max dsc hw blocks used by display (only available
  *			for dsi display)
@@ -886,12 +914,6 @@ struct msm_display_info {
 
 	bool is_connected;
 
-	uint64_t panel_id;
-	uint64_t panel_ver;
-	uint32_t panel_regDA;
-	char panel_name[MSM_DISP_NAME_LEN_MAX];
-	char panel_supplier[MSM_DISP_NAME_LEN_MAX];
-
 	unsigned int width_mm;
 	unsigned int height_mm;
 
@@ -906,7 +928,7 @@ struct msm_display_info {
 
 	uint32_t qsync_min_fps;
 	bool has_qsync_min_fps_list;
-	bool has_avr_step_req;
+	uint32_t avr_step_fps;
 
 	uint32_t te_source;
 
@@ -1089,7 +1111,6 @@ struct msm_drm_private {
 
 	struct mutex vm_client_lock;
 	struct list_head vm_client_list;
-	struct notifier_block msm_drv_notifier;
 };
 
 /* get struct msm_kms * from drm_device * */
@@ -1138,10 +1159,6 @@ int msm_gem_map_vma(struct msm_gem_address_space *aspace,
 struct device *msm_gem_get_aspace_device(struct msm_gem_address_space *aspace);
 
 void msm_gem_address_space_put(struct msm_gem_address_space *aspace);
-
-struct msm_gem_address_space *
-msm_gem_address_space_create(struct device *dev, struct iommu_domain *domain,
-		const char *name);
 
 /* For SDE  display */
 struct msm_gem_address_space *
@@ -1209,11 +1226,8 @@ void msm_gem_sync(struct drm_gem_object *obj);
 int msm_gem_mmap_obj(struct drm_gem_object *obj,
 			struct vm_area_struct *vma);
 int msm_gem_mmap(struct file *filp, struct vm_area_struct *vma);
-vm_fault_t msm_gem_fault(struct vm_fault *vmf);
 uint64_t msm_gem_mmap_offset(struct drm_gem_object *obj);
 int msm_gem_get_iova(struct drm_gem_object *obj,
-		struct msm_gem_address_space *aspace, uint64_t *iova);
-int msm_gem_get_and_pin_iova(struct drm_gem_object *obj,
 		struct msm_gem_address_space *aspace, uint64_t *iova);
 uint64_t msm_gem_iova(struct drm_gem_object *obj,
 		struct msm_gem_address_space *aspace);
@@ -1229,8 +1243,17 @@ int msm_gem_dumb_create(struct drm_file *file, struct drm_device *dev,
 int msm_gem_dumb_map_offset(struct drm_file *file, struct drm_device *dev,
 		uint32_t handle, uint64_t *offset);
 struct sg_table *msm_gem_prime_get_sg_table(struct drm_gem_object *obj);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+int msm_gem_prime_vmap(struct drm_gem_object *obj, struct iosys_map *map);
+void msm_gem_prime_vunmap(struct drm_gem_object *obj, struct iosys_map *map);
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+int msm_gem_prime_vmap(struct drm_gem_object *obj, struct dma_buf_map *map);
+void msm_gem_prime_vunmap(struct drm_gem_object *obj, struct dma_buf_map *map);
+#else
 void *msm_gem_prime_vmap(struct drm_gem_object *obj);
 void msm_gem_prime_vunmap(struct drm_gem_object *obj, void *vaddr);
+vm_fault_t msm_gem_fault(struct vm_fault *vmf);
+#endif
 int msm_gem_prime_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma);
 struct drm_gem_object *msm_gem_prime_import_sg_table(struct drm_device *dev,
 		struct dma_buf_attachment *attach, struct sg_table *sg);
@@ -1239,7 +1262,6 @@ void msm_gem_prime_unpin(struct drm_gem_object *obj);
 struct drm_gem_object *msm_gem_prime_import(struct drm_device *dev,
 					    struct dma_buf *dma_buf);
 void *msm_gem_get_vaddr(struct drm_gem_object *obj);
-void *msm_gem_get_vaddr_active(struct drm_gem_object *obj);
 void msm_gem_put_vaddr(struct drm_gem_object *obj);
 int msm_gem_madvise(struct drm_gem_object *obj, unsigned madv);
 int msm_gem_cpu_prep(struct drm_gem_object *obj, uint32_t op, ktime_t *timeout);
@@ -1249,14 +1271,6 @@ int msm_gem_new_handle(struct drm_device *dev, struct drm_file *file,
 		uint32_t size, uint32_t flags, uint32_t *handle, char *name);
 struct drm_gem_object *msm_gem_new(struct drm_device *dev,
 		uint32_t size, uint32_t flags);
-struct drm_gem_object *msm_gem_new_locked(struct drm_device *dev,
-		uint32_t size, uint32_t flags);
-void *msm_gem_kernel_new(struct drm_device *dev, uint32_t size,
-		uint32_t flags, struct msm_gem_address_space *aspace,
-		struct drm_gem_object **bo, uint64_t *iova);
-void *msm_gem_kernel_new_locked(struct drm_device *dev, uint32_t size,
-		uint32_t flags, struct msm_gem_address_space *aspace,
-		struct drm_gem_object **bo, uint64_t *iova);
 struct drm_gem_object *msm_gem_import(struct drm_device *dev,
 		struct dma_buf *dmabuf, struct sg_table *sgt);
 
@@ -1265,7 +1279,10 @@ void msm_gem_object_set_name(struct drm_gem_object *bo, const char *fmt, ...);
 
 int msm_gem_delayed_import(struct drm_gem_object *obj);
 
-void msm_framebuffer_set_keepattrs(struct drm_framebuffer *fb, bool enable);
+#define MSM_FB_CACHE_NONE	0x0
+#define MSM_FB_CACHE_WRITE_EN	0x1
+#define MSM_FB_CACHE_READ_EN	0x2
+
 int msm_framebuffer_prepare(struct drm_framebuffer *fb,
 		struct msm_gem_address_space *aspace);
 void msm_framebuffer_cleanup(struct drm_framebuffer *fb,
@@ -1280,8 +1297,13 @@ struct drm_framebuffer *msm_framebuffer_init(struct drm_device *dev,
 		struct drm_gem_object **bos);
 struct drm_framebuffer *msm_framebuffer_create(struct drm_device *dev,
 		struct drm_file *file, const struct drm_mode_fb_cmd2 *mode_cmd);
-struct drm_framebuffer * msm_alloc_stolen_fb(struct drm_device *dev,
-		int w, int h, int p, uint32_t format);
+int msm_framebuffer_set_cache_hint(struct drm_framebuffer *fb,
+		u32 flags, u32 rd_type, u32 wr_type);
+int msm_framebuffer_get_cache_hint(struct drm_framebuffer *fb,
+		u32 *flags, u32 *rd_type, u32 *wr_type);
+
+int msm_fb_obj_get_attrs(struct drm_gem_object *obj,
+		int *fb_ns, int *fb_sec, int *fb_sec_dir);
 
 struct drm_fb_helper *msm_fbdev_init(struct drm_device *dev);
 void msm_fbdev_free(struct drm_device *dev);
@@ -1365,10 +1387,7 @@ static inline void __exit msm_mdp_unregister(void)
 }
 #endif /* CONFIG_DRM_MSM_MDP5 */
 
-#ifdef CONFIG_DEBUG_FS
-void msm_gem_describe(struct drm_gem_object *obj, struct seq_file *m);
-void msm_gem_describe_objects(struct list_head *list, struct seq_file *m);
-void msm_framebuffer_describe(struct drm_framebuffer *fb, struct seq_file *m);
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 int msm_debugfs_late_init(struct drm_device *dev);
 int msm_rd_debugfs_init(struct drm_minor *minor);
 void msm_rd_debugfs_cleanup(struct msm_drm_private *priv);
@@ -1384,7 +1403,7 @@ static inline void msm_rd_dump_submit(struct msm_rd_state *rd, struct msm_gem_su
 		const char *fmt, ...) {}
 static inline void msm_rd_debugfs_cleanup(struct msm_drm_private *priv) {}
 static inline void msm_perf_debugfs_cleanup(struct msm_drm_private *priv) {}
-#endif
+#endif /* CONFIG_DEBUG_FS */
 
 #if IS_ENABLED(CONFIG_DRM_MSM_DSI)
 void __init dsi_display_register(void);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 #include <linux/iopoll.h>
 
@@ -200,12 +201,12 @@ static int sde_hw_get_axi_halt_status(struct sde_hw_vbif *vbif)
 	struct sde_hw_blk_reg_map *c = &vbif->hw;
 	int ctrl = 0;
 
-	return readl_poll_timeout(c->base_off + c->blk_off +
-		VBIF_AXI_HALT_CTRL1, ctrl, ctrl & BIT(0), 100, 4000);
+	return read_poll_timeout(sde_reg_read, ctrl, (ctrl & BIT(0)),
+			100, false, 4000, c, VBIF_AXI_HALT_CTRL1);
 }
 
 static void sde_hw_set_qos_remap(struct sde_hw_vbif *vbif,
-		u32 xin_id, u32 level, u32 remap_level)
+		u32 xin_id, u32 level, u32 rp_remap, u32 lvl_remap)
 {
 	struct sde_hw_blk_reg_map *c;
 	u32 reg_val, reg_val_lvl, mask, reg_high, reg_shift;
@@ -224,10 +225,10 @@ static void sde_hw_set_qos_remap(struct sde_hw_vbif *vbif,
 	mask = 0x7 << reg_shift;
 
 	reg_val &= ~mask;
-	reg_val |= (remap_level << reg_shift) & mask;
+	reg_val |= (rp_remap << reg_shift) & mask;
 
 	reg_val_lvl &= ~mask;
-	reg_val_lvl |= (remap_level << reg_shift) & mask;
+	reg_val_lvl |= (lvl_remap << reg_shift) & mask;
 
 	SDE_REG_WRITE(c, VBIF_XINL_QOS_RP_REMAP_000 + reg_high, reg_val);
 	SDE_REG_WRITE(c, VBIF_XINL_QOS_LVL_REMAP_000 + reg_high, reg_val_lvl);
@@ -279,7 +280,7 @@ static const struct sde_vbif_cfg *_top_offset(enum sde_vbif vbif,
 			b->base_off = addr;
 			b->blk_off = m->vbif[i].base;
 			b->length = m->vbif[i].len;
-			b->hwversion = m->hwversion;
+			b->hw_rev = m->hw_rev;
 			b->log_mask = SDE_DBG_MASK_VBIF;
 			return &m->vbif[i];
 		}

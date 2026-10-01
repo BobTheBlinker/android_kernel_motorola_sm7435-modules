@@ -1,6 +1,6 @@
 /*
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -38,9 +38,14 @@
 #include <linux/types.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
+#include <linux/version.h>
 #include <drm/drm_fixed.h>
 #include <drm/drm_edid.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+#include <drm/display/drm_dp_mst_helper.h>
+#else
 #include <drm/drm_dp_mst_helper.h>
+#endif
 #include "dp_mst_sim_helper.h"
 #include "dp_debug.h"
 
@@ -87,7 +92,7 @@ struct dp_mst_notify_work {
 	u32 port_mask;
 };
 
-#ifdef CONFIG_DYNAMIC_DEBUG
+#if IS_ENABLED(CONFIG_DYNAMIC_DEBUG)
 static void dp_sideband_hex_dump(const char *name,
 		u32 address, u8 *buffer, size_t size)
 {
@@ -114,7 +119,7 @@ static void dp_sideband_hex_dump(const char *name,
 		u32 address, u8 *buffer, size_t size)
 {
 }
-#endif
+#endif /* CONFIG_DYNAMIC_DEBUG */
 
 static u8 dp_mst_sim_msg_header_crc4(const uint8_t *data, size_t num_nibbles)
 {
@@ -1055,6 +1060,18 @@ static void dp_mst_sim_notify(struct dp_mst_sim_context *ctx,
 	queue_work(ctx->wq, &work->base);
 }
 
+static void dp_mst_sim_free_ports(struct dp_mst_sim_context *ctx)
+{
+	u32 i;
+
+	for (i = 0; i < ctx->port_num; i++)
+		kfree(ctx->ports[i].edid);
+
+	kfree(ctx->ports);
+	ctx->ports = NULL;
+	ctx->port_num = 0;
+}
+
 int dp_mst_sim_update(void *mst_sim_context, u32 port_num,
 		struct dp_mst_sim_port *ports)
 {
@@ -1064,7 +1081,7 @@ int dp_mst_sim_update(void *mst_sim_context, u32 port_num,
 	u32 update_mask = 0;
 	u32 i;
 
-	if (!ctx || port_num >= 15)
+	if (!ctx || port_num >= 15 || !ports)
 		return -EINVAL;
 
 	mutex_lock(&ctx->session_lock);
@@ -1081,18 +1098,18 @@ int dp_mst_sim_update(void *mst_sim_context, u32 port_num,
 		}
 	}
 
-	for (i = 0; i < ctx->port_num; i++)
-		kfree(ctx->ports[i].edid);
-	kfree(ctx->ports);
-	ctx->port_num = 0;
+	dp_mst_sim_free_ports(ctx);
+
+	if (!port_num)
+		goto end;
 
 	ctx->ports = kcalloc(port_num, sizeof(*ports), GFP_KERNEL);
 	if (!ctx->ports) {
 		rc = -ENOMEM;
 		goto fail;
 	}
-
 	ctx->port_num = port_num;
+
 	for (i = 0; i < port_num; i++) {
 		ctx->ports[i] = ports[i];
 		if (ports[i].edid_size) {
@@ -1114,12 +1131,10 @@ int dp_mst_sim_update(void *mst_sim_context, u32 port_num,
 	}
 
 fail:
-	if (rc) {
-		for (i = 0; i < ctx->port_num; i++)
-			kfree(ctx->ports[i].edid);
-		kfree(ctx->ports);
-	}
+	if (rc)
+		dp_mst_sim_free_ports(ctx);
 
+end:
 	mutex_unlock(&ctx->session_lock);
 
 	if (update_mask)

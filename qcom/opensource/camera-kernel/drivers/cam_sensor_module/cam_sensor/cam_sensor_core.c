@@ -168,7 +168,6 @@ static int32_t cam_sensor_i2c_pkt_parse(struct cam_sensor_ctrl_t *s_ctrl,
 	uintptr_t generic_ptr;
 	struct cam_control *ioctl_ctrl = NULL;
 	struct cam_packet *csl_packet = NULL;
-	struct cam_packet *csl_packet_u = NULL;
 	struct cam_cmd_buf_desc *cmd_desc = NULL;
 	struct cam_buf_io_cfg *io_cfg = NULL;
 	struct i2c_settings_array *i2c_reg_settings = NULL;
@@ -207,21 +206,22 @@ static int32_t cam_sensor_i2c_pkt_parse(struct cam_sensor_ctrl_t *s_ctrl,
 			"Inval cam_packet strut size: %zu, len_of_buff: %zu",
 			 sizeof(struct cam_packet), len_of_buff);
 		rc = -EINVAL;
-		goto put_ref;
+		goto end;
 	}
 
 	remain_len -= (size_t)config.offset;
-	csl_packet_u = (struct cam_packet *)(generic_ptr +
+	csl_packet = (struct cam_packet *)(generic_ptr +
 		(uint32_t)config.offset);
 
-	offset = (uint32_t *)&csl_packet_u->payload;
-	offset += csl_packet_u->cmd_buf_offset / 4;
+	offset = (uint32_t *)&csl_packet->payload;
+	offset += csl_packet->cmd_buf_offset / 4;
 	cmd_desc = (struct cam_cmd_buf_desc *)(offset);
 
-	rc = cam_packet_util_copy_pkt_to_kmd(csl_packet_u, &csl_packet, remain_len);
-	if (rc) {
-		CAM_ERR(CAM_SENSOR, "Copying packet to KMD failed");
-		goto put_ref;
+	if (cam_packet_util_validate_packet(csl_packet,
+		remain_len)) {
+		CAM_ERR(CAM_SENSOR, "Invalid packet params");
+		rc = -EINVAL;
+		goto end;
 	}
 
 	if ((csl_packet->header.op_code & 0xFFFFFF) !=
@@ -286,7 +286,7 @@ static int32_t cam_sensor_i2c_pkt_parse(struct cam_sensor_ctrl_t *s_ctrl,
 		}
 
 		io_cfg = (struct cam_buf_io_cfg *) ((uint8_t *)
-			&csl_packet->payload +
+			&csl_packet->payload_flex +
 			csl_packet->io_configs_offset);
 
 		if (io_cfg == NULL) {
@@ -411,9 +411,10 @@ static int32_t cam_sensor_i2c_pkt_parse(struct cam_sensor_ctrl_t *s_ctrl,
 			csl_packet->header.request_id;
 	}
 
+	cam_mem_put_cpu_buf(config.packet_handle);
+	return rc;
+
 end:
-	cam_common_mem_free(csl_packet);
-put_ref:
 	cam_mem_put_cpu_buf(config.packet_handle);
 	return rc;
 }
@@ -546,24 +547,6 @@ int32_t cam_sensor_update_slave_info(void *probe_info,
 
 		memcpy(s_ctrl->sensor_name, sensor_probe_info_v2->sensor_name,
 			CAM_SENSOR_NAME_MAX_SIZE-1);
-
-#ifdef CONFIG_CCI_ADDR_SWITCH
-		s_ctrl->i2c_addr_switch           =  sensor_probe_info_v2->i2c_addr_switch;
-		s_ctrl->second_i2c_address        =  sensor_probe_info_v2->second_i2c_address;
-		s_ctrl->i2c_switch_reg_addr_Type  =  sensor_probe_info_v2->i2c_switch_reg_addr_Type;
-		s_ctrl->i2c_switch_reg_data_Type  =  sensor_probe_info_v2->i2c_switch_reg_data_Type;
-		s_ctrl->i2c_switch_reg_addr       =  sensor_probe_info_v2->i2c_switch_reg_addr;
-		s_ctrl->i2c_switch_reg_data       =  sensor_probe_info_v2->i2c_switch_reg_data;
-		s_ctrl->i2c_switch_reg_delayMs    =  sensor_probe_info_v2->i2c_switch_reg_delayMs;
-#endif
-#ifdef CONFIG_MOT_PROBE_SUB_DEVICE
-		s_ctrl->probe_sub_device          =  sensor_probe_info_v2->probe_sub_device;
-		s_ctrl->sub_device_addr           =  sensor_probe_info_v2->sub_device_addr;
-		s_ctrl->sub_device_data_type      =  sensor_probe_info_v2->sub_device_data_type;
-		s_ctrl->sub_device_addr_type      =  sensor_probe_info_v2->sub_device_addr_type;
-		s_ctrl->sub_device_id_addr        =  sensor_probe_info_v2->sub_device_id_addr;
-		s_ctrl->expected_sub_device_id    =  sensor_probe_info_v2->expected_sub_device_id;
-#endif
 	}
 
 	CAM_DBG(CAM_SENSOR,
@@ -682,7 +665,6 @@ int32_t cam_handle_mem_ptr(uint64_t handle, uint32_t cmd,
 	void *ptr;
 	size_t len;
 	struct cam_packet *pkt = NULL;
-	struct cam_packet *pkt_u = NULL;
 	struct cam_cmd_buf_desc *cmd_desc = NULL;
 	uintptr_t cmd_buf1 = 0;
 	uintptr_t packet = 0;
@@ -696,35 +678,22 @@ int32_t cam_handle_mem_ptr(uint64_t handle, uint32_t cmd,
 		return -EINVAL;
 	}
 
-	pkt_u = (struct cam_packet *)packet;
-	if (pkt_u == NULL) {
+	pkt = (struct cam_packet *)packet;
+	if (pkt == NULL) {
 		CAM_ERR(CAM_SENSOR, "packet pos is invalid");
 		rc = -EINVAL;
-		goto put_ref;
+		goto end;
 	}
 
-	rc = cam_packet_util_copy_pkt_to_kmd(pkt_u, &pkt, len);
-	if (rc) {
-		CAM_ERR(CAM_SENSOR, "Copying packet to KMD failed");
-		goto put_ref;
-	}
-
-	if ((len < sizeof(struct cam_packet)) || (pkt->cmd_buf_offset +
-		sizeof(struct cam_cmd_buf_desc) >= (len - sizeof(struct cam_packet)))) {
+	if ((len < sizeof(struct cam_packet)) ||
+		(pkt->cmd_buf_offset >= (len - sizeof(struct cam_packet)))) {
 		CAM_ERR(CAM_SENSOR, "Not enough buf provided");
 		rc = -EINVAL;
 		goto end;
 	}
 
-	if ((sizeof(struct cam_packet) +
-		(sizeof(struct cam_cmd_buf_desc) * pkt->num_cmd_buf)) > len) {
-		CAM_INFO(CAM_SENSOR, "Not enough buf provided");
-		rc = -EINVAL;
-		goto end;
-	}
-
 	cmd_desc = (struct cam_cmd_buf_desc *)
-		((uint32_t *)&pkt->payload + pkt->cmd_buf_offset/4);
+		((uint32_t *)&pkt->payload_flex + pkt->cmd_buf_offset/4);
 	rc = cam_packet_util_validate_cmd_desc(cmd_desc);
 	if (rc) {
 		CAM_ERR(CAM_SENSOR, "Invalid cmd desc ret: %d", rc);
@@ -779,9 +748,10 @@ int32_t cam_handle_mem_ptr(uint64_t handle, uint32_t cmd,
 		cam_mem_put_cpu_buf(cmd_desc[i].mem_handle);
 	}
 
+	cam_mem_put_cpu_buf(handle);
+	return rc;
+
 end:
-	cam_common_mem_free(pkt);
-put_ref:
 	cam_mem_put_cpu_buf(handle);
 	return rc;
 }
@@ -868,10 +838,6 @@ void cam_sensor_shutdown(struct cam_sensor_ctrl_t *s_ctrl)
 int cam_sensor_match_id(struct cam_sensor_ctrl_t *s_ctrl)
 {
 	int rc = 0;
-#ifdef CONFIG_CAM_SENSOR_PROBE_DEBUG
-	int retries = 5;
-	bool matched = false;
-#endif
 	uint32_t chipid = 0;
 	struct cam_camera_slave_info *slave_info;
 
@@ -886,35 +852,11 @@ int cam_sensor_match_id(struct cam_sensor_ctrl_t *s_ctrl)
 	if (s_ctrl->hw_no_ops)
 		return rc;
 
-#ifdef CONFIG_CAM_SENSOR_PROBE_DEBUG
-	while (retries-- && !matched) {
-		rc = camera_io_dev_read(
-			&(s_ctrl->io_master_info),
-			slave_info->sensor_id_reg_addr,
-			&chipid,
-			s_ctrl->sensor_probe_addr_type,
-			s_ctrl->sensor_probe_data_type);
-
-		CAM_INFO(CAM_SENSOR, "%s read id: 0x%x expected id 0x%x:",
-			s_ctrl->sensor_name, chipid, slave_info->sensor_id);
-
-		if (cam_sensor_id_by_mask(s_ctrl, chipid) == slave_info->sensor_id)
-			matched = true;
-
-		if (!matched && !retries) {
-			CAM_ERR(CAM_SENSOR, "Failed %s read id: 0x%x expected id 0x%x:",
-					s_ctrl->sensor_name, chipid,
-					slave_info->sensor_id);
-					return -ENODEV;
-		}
-	}
-#else
 	rc = camera_io_dev_read(
 		&(s_ctrl->io_master_info),
 		slave_info->sensor_id_reg_addr,
-		&chipid,
-		s_ctrl->sensor_probe_addr_type,
-		s_ctrl->sensor_probe_data_type);
+		&chipid, CAMERA_SENSOR_I2C_TYPE_WORD,
+		CAMERA_SENSOR_I2C_TYPE_WORD);
 
 	CAM_DBG(CAM_SENSOR, "%s read id: 0x%x expected id 0x%x:",
 		s_ctrl->sensor_name, chipid, slave_info->sensor_id);
@@ -925,148 +867,8 @@ int cam_sensor_match_id(struct cam_sensor_ctrl_t *s_ctrl)
 				slave_info->sensor_id);
 		return -ENODEV;
 	}
-#endif
 	return rc;
 }
-
-#ifdef CONFIG_CCI_ADDR_SWITCH
-int cam_sensor_set_i2c_addr_switch_reg(struct cam_sensor_ctrl_t *s_ctrl)
-{
-	int rc = 0;
-	uint16_t sensor_address = 0;
-	struct cam_sensor_i2c_reg_setting wr_setting;
-	struct cam_sensor_i2c_reg_array reg_setting;
-
-	/* if hal doesn't config i2c_addr_switch parameter in sensor xml, return success immediately */
-	if (!s_ctrl->i2c_addr_switch) {
-		return 0;
-	}
-
-	/* save sensor i2c address */
-	sensor_address = s_ctrl->io_master_info.cci_client->sid;
-
-	/* set sub-device i2c address */
-	if (s_ctrl->second_i2c_address) {
-		s_ctrl->io_master_info.cci_client->sid = s_ctrl->second_i2c_address >> 1;
-	}
-
-	reg_setting.reg_addr = s_ctrl->i2c_switch_reg_addr;
-	reg_setting.reg_data = s_ctrl->i2c_switch_reg_data;
-	reg_setting.delay = s_ctrl->i2c_switch_reg_delayMs;
-	reg_setting.data_mask = 0;
-	wr_setting.addr_type = s_ctrl->i2c_switch_reg_addr_Type;
-	wr_setting.data_type = s_ctrl->i2c_switch_reg_data_Type;
-	wr_setting.reg_setting = &reg_setting;
-	wr_setting.size = 1;
-	wr_setting.delay = 0;
-	rc = camera_io_dev_write(&s_ctrl->io_master_info, &wr_setting);
-
-	/* restore sensor i2c address */
-	s_ctrl->io_master_info.cci_client->sid = sensor_address;
-
-	if (rc == 0) {
-		CAM_INFO(CAM_SENSOR, "write i2c addr switch reg success");
-	}
-	else {
-		CAM_ERR(CAM_SENSOR, "write i2c addr switch reg failed!!!");
-		rc = -EINVAL;
-	}
-
-	return rc;
-}
-#endif
-
-#ifdef CONFIG_MOT_PROBE_SUB_DEVICE
-int cam_sensor_match_sub_device_id(struct cam_sensor_ctrl_t *s_ctrl)
-{
-	int rc = 0;
-	uint32_t sub_device_id = 0;
-	uint16_t sensor_address = 0;
-#ifdef CONFIG_CAM_SENSOR_PROBE_DEBUG
-	int retries = 5;
-	bool readSuccess = false;
-#endif
-
-	/* if hal doesn't config ProbeSubDevice parameter in sensor xml, return success immediately */
-	if (!s_ctrl->probe_sub_device) {
-		return 0;
-	}
-
-	/* save sensor i2c address */
-	sensor_address = s_ctrl->io_master_info.cci_client->sid;
-
-	/* set sub-device i2c address */
-	if (s_ctrl->sub_device_addr) {
-		s_ctrl->io_master_info.cci_client->sid = s_ctrl->sub_device_addr >> 1;
-	}
-
-#ifdef CONFIG_CAM_SENSOR_PROBE_DEBUG
-	while (retries-- && !readSuccess) {
-		rc = camera_io_dev_read(
-			&(s_ctrl->io_master_info),
-			s_ctrl->sub_device_id_addr,
-			&sub_device_id,
-			s_ctrl->sub_device_addr_type,
-			s_ctrl->sub_device_data_type);
-
-#ifdef CONFIG_IMX896_MP_SENSOR_COMPATIBLE
-                sub_device_id = sub_device_id & 0x10;
-                s_ctrl->expected_sub_device_id = s_ctrl->expected_sub_device_id & 0x10;
-#endif
-
-		CAM_INFO(CAM_SENSOR, "Read sub device id: 0x%x expected sub device id 0x%x",
-			sub_device_id, s_ctrl->expected_sub_device_id);
-
-		if (sub_device_id == s_ctrl->expected_sub_device_id) {
-			CAM_INFO(CAM_SENSOR,
-				"Probe sub device success,slot:%d,sub_device_addr:0x%x,sub_device_id:0x%x",
-				s_ctrl->soc_info.index,
-				s_ctrl->sub_device_addr,
-				s_ctrl->expected_sub_device_id);
-			rc = 0;
-			readSuccess = true;
-		} else if (rc) {
-			CAM_ERR(CAM_SENSOR, "read sub device id failed!!! delay and retry!!! rc=%d", rc);
-			readSuccess = false;
-			rc = -EINVAL;
-			usleep_range(1000, 1010);
-		} else {
-			readSuccess = true;
-			rc = -ENODEV;
-			CAM_INFO(CAM_SENSOR, "read sub device id success, but sub device id not matched, skip probe process");
-		}
-	}
-#else
-	rc = camera_io_dev_read(
-		&(s_ctrl->io_master_info),
-		s_ctrl->sub_device_id_addr,
-		&sub_device_id,
-		s_ctrl->sub_device_addr_type,
-		s_ctrl->sub_device_data_type);
-
-	CAM_INFO(CAM_SENSOR, "Read sub device id: 0x%x expected sub device id 0x%x",
-		sub_device_id, s_ctrl->expected_sub_device_id);
-
-	if (sub_device_id == s_ctrl->expected_sub_device_id) {
-		CAM_INFO(CAM_SENSOR,
-			"Probe sub device success,slot:%d,sub_device_addr:0x%x,sub_device_id:0x%x",
-			s_ctrl->soc_info.index,
-			s_ctrl->sub_device_addr,
-			s_ctrl->expected_sub_device_id);
-		rc = 0;
-	}
-	else {
-		CAM_INFO(CAM_SENSOR, "sub device id not matched, skip probe process");
-		rc = -EINVAL;
-	}
-#endif
-
-	/* restore sensor i2c address */
-	s_ctrl->io_master_info.cci_client->sid = sensor_address;
-
-	return rc;
-}
-#endif
 
 int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 	void *arg)
@@ -1152,24 +954,22 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 				);
 			goto free_power_settings;
 		}
-
-#ifdef CONFIG_CCI_ADDR_SWITCH
-		/* load probe setting before read sensorID */
-		rc = cam_sensor_set_i2c_addr_switch_reg(s_ctrl);
-
-		if (rc < 0) {
-			CAM_ERR(CAM_SENSOR,
-				"set i2c addr switch reg failed for %s slot:%d, slave_addr:0x%x, sensor_id:0x%x",
-				s_ctrl->sensor_name,
-				s_ctrl->soc_info.index,
-				s_ctrl->sensordata->slave_info.sensor_slave_addr,
-				s_ctrl->sensordata->slave_info.sensor_id);
-			cam_sensor_power_down(s_ctrl);
-			msleep(20);
-			goto free_power_settings;
+		if (s_ctrl->i2c_data.reg_bank_unlock_settings.is_settings_valid) {
+			rc = cam_sensor_apply_settings(s_ctrl, 0,
+				CAM_SENSOR_PACKET_OPCODE_SENSOR_REG_BANK_UNLOCK);
+			if (rc < 0) {
+				CAM_ERR(CAM_SENSOR, "REG_bank unlock failed");
+				cam_sensor_power_down(s_ctrl);
+				goto free_power_settings;
+			}
+			rc = delete_request(&(s_ctrl->i2c_data.reg_bank_unlock_settings));
+			if (rc < 0) {
+				CAM_ERR(CAM_SENSOR,
+					"failed while deleting REG_bank unlock settings");
+				cam_sensor_power_down(s_ctrl);
+				goto free_power_settings;
+			}
 		}
-#endif
-
 		/* Match sensor ID */
 		rc = cam_sensor_match_id(s_ctrl);
 		if (rc < 0) {
@@ -1183,16 +983,6 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 			msleep(20);
 			goto free_power_settings;
 		}
-
-#ifdef CONFIG_MOT_PROBE_SUB_DEVICE
-		/* Match sub-device ID */
-		rc = cam_sensor_match_sub_device_id(s_ctrl);
-		if (rc < 0) {
-			cam_sensor_power_down(s_ctrl);
-			msleep(20);
-			goto free_power_settings;
-		}
-#endif
 
 		if (s_ctrl->i2c_data.reg_bank_lock_settings.is_settings_valid) {
 			rc = cam_sensor_apply_settings(s_ctrl, 0,
@@ -1224,9 +1014,6 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 		 */
 		s_ctrl->is_probe_succeed = 1;
 		s_ctrl->sensor_state = CAM_SENSOR_INIT;
-#ifdef CONFIG_MOT_SENSOR_PRE_POWERUP
-		s_ctrl->sensor_power_up_done = 0;
-#endif
 
 		CAM_INFO(CAM_SENSOR,
 				"Probe success for %s slot:%d,slave_addr:0x%x,sensor_id:0x%x",
@@ -1430,7 +1217,6 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 		CAM_GET_TIMESTAMP(ts);
 		CAM_CONVERT_TIMESTAMP_FORMAT(ts, hrs, min, sec, ms);
 
-
 		CAM_INFO(CAM_SENSOR,
 			"%llu:%llu:%llu.%llu CAM_START_DEV Success for %s sensor_id:0x%x,sensor_slave_addr:0x%x",
 			hrs, min, sec, ms,
@@ -1465,7 +1251,6 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 
 		CAM_GET_TIMESTAMP(ts);
 		CAM_CONVERT_TIMESTAMP_FORMAT(ts, hrs, min, sec, ms);
-
 
 		CAM_INFO(CAM_SENSOR,
 			"%llu:%llu:%llu.%llu CAM_STOP_DEV Success for %s sensor_id:0x%x,sensor_slave_addr:0x%x",
@@ -1567,62 +1352,6 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 		}
 	}
 		break;
-#ifdef CONFIG_MOT_SENSOR_PRE_POWERUP
-	case CAM_MOT_PRE_POWER_UP: {
-		if (!s_ctrl->sensor_power_up_done)
-		{
-			rc = cam_sensor_power_up(s_ctrl);
-			if (rc < 0) {
-				CAM_ERR(CAM_SENSOR,
-					"MotPreAct - Sensor Power up failed for %s sensor_id:0x%x, slave_addr:0x%x",
-					s_ctrl->sensor_name,
-					s_ctrl->sensordata->slave_info.sensor_id,
-					s_ctrl->sensordata->slave_info.sensor_slave_addr);
-				goto release_mutex;
-			}
-			s_ctrl->sensor_power_up_done = 1;
-			CAM_DBG(CAM_SENSOR, "MotPreAct - Camera[%s] pre power on done = %d", s_ctrl->sensor_name, s_ctrl->sensor_power_up_done);
-		}
-	}
-		break;
-	case CAM_MOT_PRE_POWER_DOWN: {
-		if (s_ctrl->sensor_power_up_done)
-		{
-			rc = cam_sensor_power_down(s_ctrl);
-			if (rc < 0) {
-				CAM_ERR(CAM_SENSOR,
-					"Sensor Power Down failed for %s sensor_id: 0x%x, slave_addr:0x%x",
-					s_ctrl->sensor_name,
-					s_ctrl->sensordata->slave_info.sensor_id,
-					s_ctrl->sensordata->slave_info.sensor_slave_addr);
-				goto release_mutex;
-			}
-			CAM_DBG(CAM_SENSOR, "MotPreAct - Camera[%s] pre power down done = %d", s_ctrl->sensor_name, s_ctrl->sensor_power_up_done);
-		}
-	}
-		break;
-	case CAM_MOT_QUERY_SENSOR_STATUS: {
-		uint32_t isSensorActive = 0;
-
-		if (s_ctrl->sensor_power_up_done)
-		{
-			isSensorActive = 1;
-		}
-		else
-		{
-			isSensorActive = 0;
-		}
-
-		if (copy_to_user(u64_to_user_ptr(cmd->handle),
-			&isSensorActive, sizeof(uint32_t))) {
-			CAM_ERR(CAM_SENSOR, "MotPreAct - Failed Copy to User");
-			rc = -EFAULT;
-			goto release_mutex;
-		}
-		CAM_DBG(CAM_SENSOR, "MotPreAct - Query camera[%s] status = %d", s_ctrl->sensor_name, isSensorActive);
-	}
-		break;
-#endif
 	default:
 		CAM_ERR(CAM_SENSOR, "%s: Invalid Opcode: %d",
 			s_ctrl->sensor_name, cmd->op_code);
@@ -1736,14 +1465,6 @@ int cam_sensor_power_up(struct cam_sensor_ctrl_t *s_ctrl)
 	if (s_ctrl->hw_no_ops)
 		return rc;
 
-#ifdef CONFIG_MOT_SENSOR_PRE_POWERUP
-	if (s_ctrl->sensor_power_up_done)
-	{
-		CAM_INFO(CAM_SENSOR, "MotPreAct - sensor[%s] has power on done.", s_ctrl->sensor_name);
-		return 0;
-	}
-#endif
-
 	power_info = &s_ctrl->sensordata->power_info;
 	slave_info = &(s_ctrl->sensordata->slave_info);
 
@@ -1854,9 +1575,6 @@ int cam_sensor_power_down(struct cam_sensor_ctrl_t *s_ctrl)
 	}
 
 	camera_io_release(&(s_ctrl->io_master_info));
-#ifdef CONFIG_MOT_SENSOR_PRE_POWERUP
-	s_ctrl->sensor_power_up_done = 0;
-#endif
 
 	return rc;
 }

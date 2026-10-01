@@ -75,7 +75,7 @@ static int cam_fd_mgr_util_packet_validate(struct cam_packet *packet,
 		return -EINVAL;
 	}
 
-	cmd_desc = (struct cam_cmd_buf_desc *) ((uint8_t *)&packet->payload +
+	cmd_desc = (struct cam_cmd_buf_desc *) ((uint8_t *)&packet->payload_flex +
 		packet->cmd_buf_offset);
 
 	for (i = 0; i < packet->num_cmd_buf; i++) {
@@ -154,7 +154,7 @@ static int cam_fd_mgr_util_get_ctx(
 
 static int cam_fd_mgr_util_put_frame_req(
 	struct list_head *src_list,
-	struct cam_fd_mgr_frame_request **frame_req, bool free_buffer)
+	struct cam_fd_mgr_frame_request **frame_req)
 {
 	int rc = 0;
 	struct cam_fd_mgr_frame_request *req_ptr = NULL;
@@ -162,9 +162,6 @@ static int cam_fd_mgr_util_put_frame_req(
 	mutex_lock(&g_fd_hw_mgr.frame_req_mutex);
 	req_ptr = *frame_req;
 	if (req_ptr) {
-		if (free_buffer)
-			cam_mem_put_cpu_buf(frame_req->hw_update_entries[0]->handle);
-
 		list_del_init(&req_ptr->list);
 		list_add_tail(&req_ptr->list, src_list);
 	}
@@ -476,7 +473,7 @@ static int cam_fd_mgr_util_parse_generic_cmd_buffer(
 	struct cam_cmd_buf_desc *cmd_desc = NULL;
 	int i, rc = 0;
 
-	cmd_desc = (struct cam_cmd_buf_desc *) ((uint8_t *)&packet->payload +
+	cmd_desc = (struct cam_cmd_buf_desc *) ((uint8_t *)&packet->payload_flex +
 		packet->cmd_buf_offset);
 
 	for (i = 0; i < packet->num_cmd_buf; i++) {
@@ -556,7 +553,7 @@ static int cam_fd_mgr_put_cpu_buf(struct cam_hw_prepare_update_args *prepare)
 	struct cam_buf_io_cfg *io_cfg;
 
 	io_cfg = (struct cam_buf_io_cfg *) ((uint8_t *)
-		&prepare->packet->payload + prepare->packet->io_configs_offset);
+		&prepare->packet->payload_flex + prepare->packet->io_configs_offset);
 
 	if (!io_cfg)
 		return -EINVAL;
@@ -593,7 +590,7 @@ static int cam_fd_mgr_util_prepare_io_buf_info(int32_t iommu_hdl,
 	num_out_buf = 0;
 	num_in_buf  = 0;
 	io_cfg = (struct cam_buf_io_cfg *) ((uint8_t *)
-		&prepare->packet->payload + prepare->packet->io_configs_offset);
+		&prepare->packet->payload_flex + prepare->packet->io_configs_offset);
 
 	for (i = 0; i < prepare->packet->num_io_configs; i++) {
 		CAM_DBG(CAM_FD,
@@ -808,7 +805,7 @@ static int cam_fd_mgr_util_prepare_hw_update_entries(
 	 * packet and update hw entries with CDM command buffers
 	 */
 	cmd_desc = (struct cam_cmd_buf_desc *)((uint8_t *)
-		&prepare->packet->payload + prepare->packet->cmd_buf_offset);
+		&prepare->packet->payload_flex + prepare->packet->cmd_buf_offset);
 
 	for (i = 0; i < prepare->packet->num_cmd_buf; i++) {
 		rc = cam_packet_util_validate_cmd_desc(&cmd_desc[i]);
@@ -953,7 +950,7 @@ static int cam_fd_mgr_util_submit_frame(void *priv, void *data)
 
 	return rc;
 put_req_into_free_list:
-	cam_fd_mgr_util_put_frame_req(&hw_mgr->frame_free_list, &frame_req, true);
+	cam_fd_mgr_util_put_frame_req(&hw_mgr->frame_free_list, &frame_req);
 
 	return rc;
 }
@@ -1098,7 +1095,7 @@ notify_context:
 
 put_req_in_free_list:
 	rc = cam_fd_mgr_util_put_frame_req(&hw_mgr->frame_free_list,
-		&frame_req, true);
+		&frame_req);
 	if (rc) {
 		CAM_ERR(CAM_FD, "Failed in putting frame req in free list");
 		/* continue */
@@ -1447,7 +1444,7 @@ unlock_dev_flush_req:
 		flush_req = (struct cam_fd_mgr_frame_request *)
 			flush_args->flush_req_pending[i];
 		cam_fd_mgr_util_put_frame_req(&hw_mgr->frame_free_list,
-			&flush_req, true);
+			&flush_req);
 	}
 
 	return rc;
@@ -1532,7 +1529,7 @@ unlock_dev_flush_ctx:
 		CAM_DBG(CAM_FD, "flush pending req %llu",
 			flush_req->request_id);
 		cam_fd_mgr_util_put_frame_req(&hw_mgr->frame_free_list,
-			&flush_req, true);
+			&flush_req);
 	}
 
 	for (i = 0; i < flush_args->num_req_active; i++) {
@@ -1540,7 +1537,7 @@ unlock_dev_flush_ctx:
 			flush_args->flush_req_active[i];
 		CAM_DBG(CAM_FD, "flush active req %llu", flush_req->request_id);
 		cam_fd_mgr_util_put_frame_req(&hw_mgr->frame_free_list,
-			&flush_req, true);
+			&flush_req);
 	}
 
 	return rc;
@@ -1923,11 +1920,11 @@ static int cam_fd_mgr_hw_config(void *hw_mgr_priv, void *hw_config_args)
 	if (hw_ctx->priority == CAM_FD_PRIORITY_HIGH) {
 		CAM_DBG(CAM_FD, "Insert frame into prio0 queue");
 		rc = cam_fd_mgr_util_put_frame_req(
-			&hw_mgr->frame_pending_list_high, &frame_req, false);
+			&hw_mgr->frame_pending_list_high, &frame_req);
 	} else {
 		CAM_DBG(CAM_FD, "Insert frame into prio1 queue");
 		rc = cam_fd_mgr_util_put_frame_req(
-			&hw_mgr->frame_pending_list_normal, &frame_req, false);
+			&hw_mgr->frame_pending_list_normal, &frame_req);
 	}
 	if (rc) {
 		CAM_ERR(CAM_FD, "Failed in queuing frame req, rc=%d", rc);
@@ -1966,7 +1963,7 @@ remove_and_put_free_list:
 	mutex_unlock(&g_fd_hw_mgr.frame_req_mutex);
 put_free_list:
 	cam_fd_mgr_util_put_frame_req(&hw_mgr->frame_free_list,
-		&frame_req, true);
+		&frame_req);
 
 	return rc;
 }

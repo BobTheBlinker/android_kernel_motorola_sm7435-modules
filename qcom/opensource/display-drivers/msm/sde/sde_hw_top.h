@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -10,9 +10,11 @@
 #include "sde_hw_catalog.h"
 #include "sde_hw_mdss.h"
 #include "sde_hw_util.h"
-#include "sde_hw_blk.h"
+
+#define HW_FENCE_IPCC_PROTOCOLp_CLIENTc(ba, p, c)   (ba + (0x40000*p) + (0x1000*c))
 
 struct sde_hw_mdp;
+struct sde_hw_sid;
 
 /**
  * struct traffic_shaper_cfg: traffic shaper configuration
@@ -142,10 +144,11 @@ struct sde_hw_mdp_ops {
 	 * get_clk_ctrl_status - get clock control status
 	 * @mdp: mdp top context driver
 	 * @clk_ctrl: clock to be controlled
-	 * @return: clock status if success, otherwise return code
+	 * @status: returns true if clock is on
+	 * @return: 0 if success, otherwise return code
 	 */
 	int (*get_clk_ctrl_status)(struct sde_hw_mdp *mdp,
-			enum sde_clk_ctrl_type clk_ctrl);
+			enum sde_clk_ctrl_type clk_ctrl, bool *status);
 
 	/**
 	 * setup_vsync_source - setup vsync source configuration details
@@ -201,23 +204,74 @@ struct sde_hw_mdp_ops {
 	 */
 	u32 (*get_autorefresh_status)(struct sde_hw_mdp *mdp,
 			u32 intf_idx);
+
+	/**
+	 * setup_hw_fences - configure hw fences top registers
+	 * @mdp:     mdp top context driver
+	 * @protocol_id:    ipcc protocol id
+	 * @client_phys_id: ipcc client id (physical id if supported)
+	 * @ipcc_base_addr: base address for ipcc reg block
+	 */
+	void (*setup_hw_fences)(struct sde_hw_mdp *mdp, u32 protocol_id, u32 client_phys_id,
+			unsigned long ipcc_base_addr);
+
+	/**
+	 * hw_fence_input_status - get hw_fence input fence timestamps and clear them
+	 * @mdp:       mdp top context driver
+	 * @s_val:     pointer to start timestamp value to populate
+	 * @e_val:     pointer to end timestamp value to populate
+	 */
+	void (*hw_fence_input_status)(struct sde_hw_mdp *mdp, u64 *s_val, u64 *e_val);
+
+	/**
+	 * hw_fence_input_timestamp_ctrl - enable or clear input fence timestamps
+	 * @mdp:       mdp top context driver
+	 * @enable:    indicates if timestamps should be enabled
+	 * @enable:    indicates if timestamps should be cleared
+	 */
+	void (*hw_fence_input_timestamp_ctrl)(struct sde_hw_mdp *mdp, bool enable, bool clear);
+
+	/**
+	 * set_ppb_fifo_size - set ppb latency buffer size to a fixed value
+	 * @mdp:      mdp top context driver
+	 * @pp:       indicates pingpong block id
+	 * @sz:       indicates size of the ppb in terms of pixels
+	 */
+	void (*set_ppb_fifo_size)(struct sde_hw_mdp *mdp, u32 pp, u32 sz);
 };
 
 struct sde_hw_mdp {
-	struct sde_hw_blk base;
 	struct sde_hw_blk_reg_map hw;
 
 	/* top */
 	enum sde_mdp idx;
 	const struct sde_mdp_cfg *caps;
 
+	spinlock_t slock;
+
 	/* ops */
 	struct sde_hw_mdp_ops ops;
+};
+
+/**
+ * struct sde_hw_sid_ops - callback functions for SID HW programming
+ */
+struct sde_hw_sid_ops {
+	/**
+	 * set_vm_sid - programs SID HW during VM transition
+	 * @sid: sde_hw_sid passed from kms
+	 * @vm: vm id to set for SIDs
+	 * @m: Pointer to mdss catalog data
+	 */
+	void (*set_vm_sid)(struct sde_hw_sid *sid, u32 vm,
+		struct sde_mdss_cfg *m);
 };
 
 struct sde_hw_sid {
 	/* rotator base */
 	struct sde_hw_blk_reg_map hw;
+	/* ops */
+	struct sde_hw_sid_ops ops;
 };
 
 /**
@@ -240,25 +294,9 @@ void sde_hw_set_rotator_sid(struct sde_hw_sid *sid);
  * sid: sde_hw_sid passed from kms
  * pipe: sspp id
  * vm: vm id to set for SIDs
+ * @m: Pointer to mdss catalog data
  */
-void sde_hw_set_sspp_sid(struct sde_hw_sid *sid, u32 pipe, u32 vm);
-
-/**
- * sde_hw_set_lutdma_sid - set sid values for the pipes
- * sid: sde_hw_sid passed from kms
- * vm: vm id to set for SIDs
- */
-void sde_hw_set_lutdma_sid(struct sde_hw_sid *sid, u32 vm);
-
-/**
- * to_sde_hw_mdp - convert base object sde_hw_base to container
- * @hw: Pointer to base hardware block
- * return: Pointer to hardware block container
- */
-static inline struct sde_hw_mdp *to_sde_hw_mdp(struct sde_hw_blk *hw)
-{
-	return container_of(hw, struct sde_hw_mdp, base);
-}
+void sde_hw_set_sspp_sid(struct sde_hw_sid *sid, u32 pipe, u32 vm, struct sde_mdss_cfg *m);
 
 /**
  * sde_hw_mdptop_init - initializes the top driver for the passed idx

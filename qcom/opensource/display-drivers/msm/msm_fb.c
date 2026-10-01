@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022, 2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
  *
@@ -21,6 +22,8 @@
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_probe_helper.h>
+#include <linux/mem-buf.h>
+#include <soc/qcom/secure_buffer.h>
 
 #include "msm_drv.h"
 #include "msm_kms.h"
@@ -29,6 +32,9 @@
 struct msm_framebuffer {
 	struct drm_framebuffer base;
 	const struct msm_format *format;
+	u32 cache_flags;
+	u32 cache_rd_type;
+	u32 cache_wr_type;
 };
 #define to_msm_framebuffer(x) container_of(x, struct msm_framebuffer, base)
 
@@ -37,63 +43,6 @@ static const struct drm_framebuffer_funcs msm_framebuffer_funcs = {
 	.destroy = drm_gem_fb_destroy,
 	.dirty = drm_atomic_helper_dirtyfb,
 };
-
-#ifdef CONFIG_DEBUG_FS
-void msm_framebuffer_describe(struct drm_framebuffer *fb, struct seq_file *m)
-{
-	struct msm_framebuffer *msm_fb;
-	int i, n;
-
-	if (!fb) {
-		DRM_ERROR("from:%pS null fb\n", __builtin_return_address(0));
-		return;
-	}
-
-	msm_fb = to_msm_framebuffer(fb);
-	n = fb->format->num_planes;
-	seq_printf(m, "fb: %dx%d@%4.4s (%2d, ID:%d)\n",
-			fb->width, fb->height, (char *)&fb->format->format,
-			drm_framebuffer_read_refcount(fb), fb->base.id);
-
-	for (i = 0; i < n; i++) {
-		seq_printf(m, "   %d: offset=%d pitch=%d, obj: ",
-				i, fb->offsets[i], fb->pitches[i]);
-		msm_gem_describe(fb->obj[i], m);
-	}
-}
-#endif
-
-void msm_framebuffer_set_keepattrs(struct drm_framebuffer *fb, bool enable)
-{
-	struct msm_framebuffer *msm_fb;
-	int i, n;
-	struct drm_gem_object *bo;
-	struct msm_gem_object *msm_obj;
-
-	if (!fb) {
-		DRM_ERROR("from:%pS null fb\n", __builtin_return_address(0));
-		return;
-	}
-
-	if (!fb->format) {
-		DRM_ERROR("from:%pS null fb->format\n",
-				__builtin_return_address(0));
-		return;
-	}
-
-	msm_fb = to_msm_framebuffer(fb);
-	n = fb->format->num_planes;
-	for (i = 0; i < n; i++) {
-		bo = msm_framebuffer_bo(fb, i);
-		if (bo) {
-			msm_obj = to_msm_bo(bo);
-			if (enable)
-				msm_obj->flags |= MSM_BO_KEEPATTRS;
-			else
-				msm_obj->flags &= ~MSM_BO_KEEPATTRS;
-		}
-	}
-}
 
 /* prepare/pin all the fb's bo's for scanout.  Note that it is not valid
  * to prepare an fb more multiple different initiator 'id's.  But that
@@ -249,7 +198,7 @@ struct drm_framebuffer *msm_framebuffer_init(struct drm_device *dev,
 	format = kms->funcs->get_format(kms, mode_cmd->pixel_format,
 			mode_cmd->modifier[0]);
 	if (!format) {
-		dev_err(dev->dev, "unsupported pixel format: %4.4s\n",
+		DISP_DEV_ERR(dev->dev, "unsupported pixel format: %4.4s\n",
 				(char *)&mode_cmd->pixel_format);
 		ret = -EINVAL;
 		goto fail;
@@ -281,7 +230,7 @@ struct drm_framebuffer *msm_framebuffer_init(struct drm_device *dev,
 
 	if (is_modified) {
 		if (!kms->funcs->check_modified_format) {
-			dev_err(dev->dev, "can't check modified fb format\n");
+			DISP_DEV_ERR(dev->dev, "can't check modified fb format\n");
 			ret = -EINVAL;
 			goto fail;
 		} else {
@@ -324,7 +273,7 @@ struct drm_framebuffer *msm_framebuffer_init(struct drm_device *dev,
 
 	ret = drm_framebuffer_init(dev, fb, &msm_framebuffer_funcs);
 	if (ret) {
-		dev_err(dev->dev, "framebuffer init failed: %d\n", ret);
+		DISP_DEV_ERR(dev->dev, "framebuffer init failed: %d\n", ret);
 		goto fail;
 	}
 
@@ -338,44 +287,84 @@ fail:
 	return ERR_PTR(ret);
 }
 
-struct drm_framebuffer *
-msm_alloc_stolen_fb(struct drm_device *dev, int w, int h, int p, uint32_t format)
+int msm_framebuffer_set_cache_hint(struct drm_framebuffer *fb,
+		u32 flags, u32 rd_type, u32 wr_type)
 {
-	struct drm_mode_fb_cmd2 mode_cmd = {
-		.pixel_format = format,
-		.width = w,
-		.height = h,
-		.pitches = { p },
-	};
-	struct drm_gem_object *bo;
-	struct drm_framebuffer *fb;
-	int size;
+	struct msm_framebuffer *msm_fb;
 
-	/* allocate backing bo */
-	size = mode_cmd.pitches[0] * mode_cmd.height;
-	DBG("allocating %d bytes for fb %d", size, dev->primary->index);
-	bo = msm_gem_new(dev, size, MSM_BO_SCANOUT | MSM_BO_WC | MSM_BO_STOLEN);
-	if (IS_ERR(bo)) {
-		dev_warn(dev->dev, "could not allocate stolen bo\n");
-		/* try regular bo: */
-		bo = msm_gem_new(dev, size, MSM_BO_SCANOUT | MSM_BO_WC);
+	if (!fb)
+		return -EINVAL;
+
+	msm_fb = to_msm_framebuffer(fb);
+	msm_fb->cache_flags = flags;
+	msm_fb->cache_rd_type = rd_type;
+	msm_fb->cache_wr_type = wr_type;
+
+	return 0;
+}
+
+int  msm_framebuffer_get_cache_hint(struct drm_framebuffer *fb,
+		u32 *flags, u32 *rd_type, u32 *wr_type)
+{
+	struct msm_framebuffer *msm_fb;
+
+	if (!fb)
+		return -EINVAL;
+
+	msm_fb = to_msm_framebuffer(fb);
+	*flags = msm_fb->cache_flags;
+	*rd_type = msm_fb->cache_rd_type;
+	*wr_type = msm_fb->cache_wr_type;
+
+	return 0;
+}
+
+int msm_fb_obj_get_attrs(struct drm_gem_object *obj,
+		int *fb_ns, int *fb_sec, int *fb_sec_dir)
+{
+	struct msm_gem_object *msm_obj = to_msm_bo(obj);
+	struct dma_buf *dma_buf;
+	int *vmid_list, *perms_list;
+	int nelems = 0;
+	int i, ret = 0;
+
+	if (!(msm_obj->flags & MSM_BO_EXTBUF))
+		return 0;
+
+	if (!obj->import_attach) {
+		DRM_DEBUG("NULL attachment in drm gem object flags:0x%x\n",
+			msm_obj->flags);
+		return 0;
 	}
-	if (IS_ERR(bo)) {
-		dev_err(dev->dev, "failed to allocate buffer object\n");
-		return ERR_CAST(bo);
+
+	dma_buf = obj->import_attach->dmabuf;
+	if (!dma_buf) {
+		DRM_DEBUG("dma_buf NULL in drm gem object\n");
+		return -EINVAL;
 	}
 
-	msm_gem_object_set_name(bo, "stolenfb");
-
-	fb = msm_framebuffer_init(dev, &mode_cmd, &bo);
-	if (IS_ERR(fb)) {
-		dev_err(dev->dev, "failed to allocate fb\n");
-		/* note: if fb creation failed, we can't rely on fb destroy
-		 * to unref the bo:
-		 */
-		drm_gem_object_put(bo);
-		return ERR_CAST(fb);
+	ret = mem_buf_dma_buf_copy_vmperm(dma_buf, &vmid_list,
+			&perms_list, &nelems);
+	if (ret) {
+		DRM_ERROR("mem_buf_dma_buf_copy_vmperm failure, err=%d\n", ret);
+		return ret;
 	}
 
-	return fb;
+	/* obtain the VMIDs of a buffer */
+	if (mem_buf_dma_buf_exclusive_owner(dma_buf))
+		*fb_ns = 1;
+	else {
+		for (i = 0; i < nelems; i++) {
+			if (vmid_list[i] == VMID_CP_PIXEL)
+				*fb_sec = 1;
+			else if (vmid_list[i] & (VMID_CP_SEC_DISPLAY |
+					VMID_CP_CAMERA_PREVIEW))
+				*fb_sec_dir = 1;
+		}
+	}
+
+	kfree(vmid_list);
+	kfree(perms_list);
+
+	return ret;
 }

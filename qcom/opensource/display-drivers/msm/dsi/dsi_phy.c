@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/of_device.h>
@@ -344,6 +344,9 @@ static int dsi_phy_settings_init(struct platform_device *pdev,
 			"qcom,dsi-phy-regulator-min-datarate-bps",
 			&phy->regulator_min_datarate_bps);
 
+	phy->dsi_phy_shared = of_property_read_bool(pdev->dev.of_node,
+			"qcom,dsi-phy-shared");
+
 	return 0;
 err:
 	lane->count_per_lane = 0;
@@ -404,6 +407,9 @@ static int dsi_phy_driver_probe(struct platform_device *pdev)
 	dsi_phy->name = of_get_property(pdev->dev.of_node, "label", NULL);
 	if (!dsi_phy->name)
 		dsi_phy->name = DSI_PHY_DEFAULT_LABEL;
+
+	dsi_phy->hw.phy_pll_bypass = of_property_read_bool(pdev->dev.of_node,
+			"qcom,dsi-phy-pll-bypass");
 
 	DSI_PHY_DBG(dsi_phy, "Probing device\n");
 
@@ -619,7 +625,8 @@ struct msm_dsi_phy *dsi_phy_get(struct device_node *of_node)
 	}
 
 	mutex_lock(&phy->phy_lock);
-	if (phy->refcount > 0) {
+	if ((phy->dsi_phy_shared && phy->refcount == 2) ||
+		(!phy->dsi_phy_shared && phy->refcount == 1)) {
 		DSI_PHY_ERR(phy, "Device under use\n");
 		phy = ERR_PTR(-EINVAL);
 	} else {
@@ -1167,11 +1174,8 @@ int dsi_phy_idle_ctrl(struct msm_dsi_phy *phy, bool enable)
 	} else {
 		phy->dsi_phy_state = DSI_PHY_ENGINE_OFF;
 
-		if (phy->hw.ops.disable)
-			phy->hw.ops.disable(&phy->hw, &phy->cfg);
-
 		if (phy->hw.ops.phy_idle_off)
-			phy->hw.ops.phy_idle_off(&phy->hw);
+			phy->hw.ops.phy_idle_off(&phy->hw, &phy->cfg);
 	}
 	mutex_unlock(&phy->phy_lock);
 
@@ -1213,32 +1217,6 @@ int dsi_phy_set_clk_freq(struct msm_dsi_phy *phy,
 }
 
 /**
- * dsi_phy_set_drive_strength_params - drive strength parameters for the panel
- * @phy:          DSI PHY handle
- * @drive strength:       array holding timing params.
- *
- * Return: error code.
- */
-int dsi_phy_set_drive_strength_params(struct msm_dsi_phy *phy,
-			      u32 drive_strength)
-{
-	int rc = 0;
-
-	if (!phy || !drive_strength) {
-		DSI_PHY_ERR(phy, "Invalid params\n");
-		return -EINVAL;
-	}
-
-	mutex_lock(&phy->phy_lock);
-
-
-	phy->cfg.phy_drive_strength = drive_strength;
-
-	mutex_unlock(&phy->phy_lock);
-	return rc;
-}
-
-/**
  * dsi_phy_set_timing_params() - timing parameters for the panel
  * @phy:          DSI PHY handle
  * @timing:       array holding timing params.
@@ -1271,6 +1249,7 @@ int dsi_phy_set_timing_params(struct msm_dsi_phy *phy,
 
 	if (phy->hw.ops.commit_phy_timing && commit)
 		phy->hw.ops.commit_phy_timing(&phy->hw, &phy->cfg.timing);
+
 	mutex_unlock(&phy->phy_lock);
 	return rc;
 }

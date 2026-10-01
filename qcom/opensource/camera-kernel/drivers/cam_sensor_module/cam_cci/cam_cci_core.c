@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022, 2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -663,11 +663,11 @@ static int32_t cam_cci_set_clk_param(struct cci_device *cci_dev,
 	if (i2c_freq_mode == cci_dev->i2c_freq_mode[master]) {
 		CAM_DBG(CAM_CCI, "CCI%d_I2C_M%d, curr_freq: %d", cci_dev->soc_info.index, master,
 			i2c_freq_mode);
-		spin_lock(&cci_master->freq_cnt_lock);
+		mutex_lock(&cci_master->freq_cnt_lock);
 		if (cci_master->freq_ref_cnt == 0)
 			down(&cci_master->master_sem);
 		cci_master->freq_ref_cnt++;
-		spin_unlock(&cci_master->freq_cnt_lock);
+		mutex_unlock(&cci_master->freq_cnt_lock);
 		mutex_unlock(&cci_master->mutex);
 		return 0;
 	}
@@ -675,9 +675,9 @@ static int32_t cam_cci_set_clk_param(struct cci_device *cci_dev,
 		cci_dev->soc_info.index, master, cci_dev->i2c_freq_mode[master], i2c_freq_mode);
 	down(&cci_master->master_sem);
 
-	spin_lock(&cci_master->freq_cnt_lock);
+	mutex_lock(&cci_master->freq_cnt_lock);
 	cci_master->freq_ref_cnt++;
-	spin_unlock(&cci_master->freq_cnt_lock);
+	mutex_unlock(&cci_master->freq_cnt_lock);
 
 	clk_params = &cci_dev->cci_clk_params[i2c_freq_mode];
 
@@ -1283,10 +1283,10 @@ enable_irq:
 rel_mutex_q:
 	mutex_unlock(&cci_dev->cci_master_info[master].mutex_q[queue]);
 
-	spin_lock(&cci_dev->cci_master_info[master].freq_cnt_lock);
+	mutex_lock(&cci_dev->cci_master_info[master].freq_cnt_lock);
 	if (--cci_dev->cci_master_info[master].freq_ref_cnt == 0)
 		up(&cci_dev->cci_master_info[master].master_sem);
-	spin_unlock(&cci_dev->cci_master_info[master].freq_cnt_lock);
+	mutex_unlock(&cci_dev->cci_master_info[master].freq_cnt_lock);
 	return rc;
 }
 
@@ -1493,10 +1493,10 @@ static int32_t cam_cci_read(struct v4l2_subdev *sd,
 rel_mutex_q:
 	mutex_unlock(&cci_dev->cci_master_info[master].mutex_q[queue]);
 
-	spin_lock(&cci_dev->cci_master_info[master].freq_cnt_lock);
+	mutex_lock(&cci_dev->cci_master_info[master].freq_cnt_lock);
 	if (--cci_dev->cci_master_info[master].freq_ref_cnt == 0)
 		up(&cci_dev->cci_master_info[master].master_sem);
-	spin_unlock(&cci_dev->cci_master_info[master].freq_cnt_lock);
+	mutex_unlock(&cci_dev->cci_master_info[master].freq_cnt_lock);
 	return rc;
 }
 
@@ -1556,10 +1556,10 @@ static int32_t cam_cci_i2c_write(struct v4l2_subdev *sd,
 	}
 
 ERROR:
-	spin_lock(&cci_dev->cci_master_info[master].freq_cnt_lock);
+	mutex_lock(&cci_dev->cci_master_info[master].freq_cnt_lock);
 	if (--cci_dev->cci_master_info[master].freq_ref_cnt == 0)
 		up(&cci_dev->cci_master_info[master].master_sem);
-	spin_unlock(&cci_dev->cci_master_info[master].freq_cnt_lock);
+	mutex_unlock(&cci_dev->cci_master_info[master].freq_cnt_lock);
 	return rc;
 }
 
@@ -1952,13 +1952,16 @@ int32_t cam_cci_core_cfg(struct v4l2_subdev *sd,
 	}
 	CAM_DBG(CAM_CCI, "CCI%d_I2C_M%d cmd = %d", cci_dev->soc_info.index, master, cci_ctrl->cmd);
 
-	mutex_lock(&cci_dev->init_mutex);
 	switch (cci_ctrl->cmd) {
 	case MSM_CCI_INIT:
+		mutex_lock(&cci_dev->init_mutex);
 		rc = cam_cci_init(sd, cci_ctrl);
+		mutex_unlock(&cci_dev->init_mutex);
 		break;
 	case MSM_CCI_RELEASE:
+		mutex_lock(&cci_dev->init_mutex);
 		rc = cam_cci_release(sd, master);
+		mutex_unlock(&cci_dev->init_mutex);
 		break;
 	case MSM_CCI_I2C_READ:
 		/*
@@ -1989,7 +1992,6 @@ int32_t cam_cci_core_cfg(struct v4l2_subdev *sd,
 	default:
 		rc = -ENOIOCTLCMD;
 	}
-	mutex_unlock(&cci_dev->init_mutex);
 
 	cci_ctrl->status = rc;
 

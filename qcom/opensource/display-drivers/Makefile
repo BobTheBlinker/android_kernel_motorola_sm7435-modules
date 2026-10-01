@@ -1,6 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0-only
+M=$(PWD)
+DISPLAY_ROOT=$(KERNEL_SRC)/$(M)
+KBUILD_OPTIONS := DISPLAY_ROOT=$(DISPLAY_ROOT)
 
-KBUILD_OPTIONS+= DISPLAY_ROOT=$(KERNEL_SRC)/$(M)
+ifeq ($(TARGET_SUPPORT),genericarmv8)
+	KBUILD_OPTIONS += CONFIG_ARCH_PARROT=y
+endif
+
+obj-m += msm/
 
 all:
 	$(MAKE) -C $(KERNEL_SRC) M=$(M) modules $(KBUILD_OPTIONS)

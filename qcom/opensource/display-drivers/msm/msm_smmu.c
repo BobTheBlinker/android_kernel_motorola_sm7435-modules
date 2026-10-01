@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -85,7 +86,7 @@ static int msm_smmu_attach(struct msm_mmu *mmu, const char * const *names,
 
 	rc = qcom_iommu_sid_switch(client->dev, SID_ACQUIRE);
 	if (rc) {
-		dev_err(client->dev, "iommu sid switch failed (%d)\n", rc);
+		DISP_DEV_ERR(client->dev, "iommu sid switch failed (%d)\n", rc);
 		return rc;
 	}
 
@@ -129,6 +130,23 @@ static void msm_smmu_detach(struct msm_mmu *mmu, const char * const *names,
 	dev_dbg(client->dev, "iommu domain detached\n");
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+static int msm_enable_smmu_translations(struct msm_mmu *mmu)
+{
+	struct msm_smmu *smmu = to_msm_smmu(mmu);
+	struct msm_smmu_client *client = msm_smmu_to_client(smmu);
+	int ret = 0;
+
+	if (!client || !client->domain)
+		return -ENODEV;
+
+	ret = qcom_iommu_enable_s1_translation(client->domain);
+	if (ret)
+		DRM_ERROR("enable iommu s1 translations failed:%d\n", ret);
+
+	return ret;
+}
+#else
 static int msm_smmu_set_attribute(struct msm_mmu *mmu,
 		enum iommu_attr attr, void *data)
 {
@@ -145,6 +163,7 @@ static int msm_smmu_set_attribute(struct msm_mmu *mmu,
 
 	return ret;
 }
+#endif
 
 static int msm_smmu_one_to_one_unmap(struct msm_mmu *mmu,
 				uint32_t dest_address, uint32_t size)
@@ -173,8 +192,14 @@ static int msm_smmu_one_to_one_map(struct msm_mmu *mmu, uint32_t iova,
 	if (!client || !client->domain)
 		return -ENODEV;
 
-	ret = iommu_map(client->domain, dest_address, dest_address,
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+	ret = iommu_map(client->domain, iova, dest_address,
+			size, prot, GFP_ATOMIC);
+#else
+	ret = iommu_map(client->domain, iova, dest_address,
 			size, prot);
+#endif
+
 	if (ret)
 		pr_err("smmu map failed\n");
 
@@ -189,8 +214,15 @@ static int msm_smmu_map(struct msm_mmu *mmu, uint64_t iova,
 	size_t ret = 0;
 
 	if (sgt && sgt->sgl) {
+
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+		ret = iommu_map_sg(client->domain, iova, sgt->sgl,
+				sgt->orig_nents, prot, GFP_ATOMIC);
+#else
 		ret = iommu_map_sg(client->domain, iova, sgt->sgl,
 				sgt->orig_nents, prot);
+#endif
+
 		WARN_ON((int)ret < 0);
 		DRM_DEBUG("%pad/0x%x/0x%x/\n", &sgt->sgl->dma_address,
 				sgt->sgl->dma_length, prot);
@@ -216,10 +248,6 @@ static void msm_smmu_destroy(struct msm_mmu *mmu)
 {
 	struct msm_smmu *smmu = to_msm_smmu(mmu);
 	struct platform_device *pdev = to_platform_device(smmu->client_dev);
-	struct iommu_domain *domain = iommu_get_domain_for_dev(smmu->client_dev);
-
-	if (domain)
-		iommu_set_fault_handler(domain, NULL, NULL);
 
 	if (smmu->client_dev)
 		platform_device_unregister(pdev);
@@ -311,7 +339,11 @@ static const struct msm_mmu_funcs funcs = {
 	.unmap_dma_buf = msm_smmu_unmap_dma_buf,
 	.destroy = msm_smmu_destroy,
 	.is_domain_secure = msm_smmu_is_domain_secure,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	.enable_smmu_translations = msm_enable_smmu_translations,
+#else
 	.set_attribute = msm_smmu_set_attribute,
+#endif
 	.one_to_one_map = msm_smmu_one_to_one_map,
 	.one_to_one_unmap = msm_smmu_one_to_one_unmap,
 	.get_dev = msm_smmu_get_dev,
@@ -397,7 +429,7 @@ static struct device *msm_smmu_device_add(struct device *dev,
 
 	smmu->client = msm_smmu_get_smmu(compat);
 	if (IS_ERR_OR_NULL(smmu->client)) {
-		DRM_ERROR("unable to find domain %d compat: %s\n", domain,
+		DRM_DEBUG("unable to find domain %d compat: %s\n", domain,
 				compat);
 		return ERR_PTR(-ENODEV);
 	}
@@ -499,13 +531,13 @@ static int msm_smmu_probe(struct platform_device *pdev)
 
 	match = of_match_device(msm_smmu_dt_match, &pdev->dev);
 	if (!match || !match->data) {
-		dev_err(&pdev->dev, "probe failed as match data is invalid\n");
+		DISP_DEV_ERR(&pdev->dev, "probe failed as match data is invalid\n");
 		return -EINVAL;
 	}
 
 	domain = match->data;
 	if (!domain) {
-		dev_err(&pdev->dev, "no matching device found\n");
+		DISP_DEV_ERR(&pdev->dev, "no matching device found\n");
 		return -EINVAL;
 	}
 
@@ -518,7 +550,7 @@ static int msm_smmu_probe(struct platform_device *pdev)
 	client->dev = &pdev->dev;
 	client->domain = iommu_get_domain_for_dev(client->dev);
 	if (!client->domain) {
-		dev_err(&pdev->dev, "iommu get domain for dev failed\n");
+		DISP_DEV_ERR(&pdev->dev, "iommu get domain for dev failed\n");
 		return -EINVAL;
 	}
 	client->compat = match->compatible;
@@ -528,7 +560,7 @@ static int msm_smmu_probe(struct platform_device *pdev)
 	if (!client->dev->dma_parms)
 		client->dev->dma_parms = devm_kzalloc(client->dev,
 				sizeof(*client->dev->dma_parms), GFP_KERNEL);
-	dma_set_max_seg_size(client->dev, DMA_BIT_MASK(32));
+	dma_set_max_seg_size(client->dev, (unsigned int)DMA_BIT_MASK(32));
 	dma_set_seg_boundary(client->dev, (unsigned long)DMA_BIT_MASK(64));
 
 	iommu_set_fault_handler(client->domain,
@@ -598,3 +630,6 @@ void __exit msm_smmu_driver_cleanup(void)
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("MSM SMMU driver");
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+MODULE_IMPORT_NS(DMA_BUF);
+#endif

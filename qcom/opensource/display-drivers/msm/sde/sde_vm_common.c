@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -35,7 +35,11 @@ struct gh_acl_desc *sde_vm_populate_acl(enum gh_vm_names vm_name)
 	struct gh_acl_desc *acl_desc;
 	gh_vmid_t vmid;
 
+#if (KERNEL_VERSION(6, 1, 0) <= LINUX_VERSION_CODE)
+	ghd_rm_get_vmid(vm_name, &vmid);
+#else
 	gh_rm_get_vmid(vm_name, &vmid);
+#endif
 
 	acl_desc = kzalloc(offsetof(struct gh_acl_desc, acl_entries[1]),
 			   GFP_KERNEL);
@@ -49,6 +53,17 @@ struct gh_acl_desc *sde_vm_populate_acl(enum gh_vm_names vm_name)
 	return acl_desc;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+int __mem_sort_cmp(void *priv, const struct list_head *a, const struct list_head *b)
+{
+	const struct msm_io_mem_entry *left =
+		container_of(a, struct msm_io_mem_entry, list);
+	const struct msm_io_mem_entry *right =
+		container_of(b, struct msm_io_mem_entry, list);
+
+	return (left->base - right->base);
+}
+#else
 int __mem_sort_cmp(void *priv, struct list_head *a, struct list_head *b)
 {
 	struct msm_io_mem_entry *left =
@@ -58,6 +73,7 @@ int __mem_sort_cmp(void *priv, struct list_head *a, struct list_head *b)
 
 	return (left->base - right->base);
 }
+#endif
 
 bool __merge_on_overlap(struct msm_io_mem_entry *res,
 		const struct msm_io_mem_entry *left,
@@ -307,7 +323,10 @@ int sde_vm_request_valid(struct sde_kms *sde_kms,
 			rc = -EINVAL;
 		break;
 	case VM_REQ_ACQUIRE:
-		if ((old_state != VM_REQ_RELEASE) || (vm_owns_hw && !sde_in_trusted_vm(sde_kms)))
+		if ((old_state == VM_REQ_ACQUIRE) && sde_in_trusted_vm(sde_kms))
+			rc = 0;
+		else if ((old_state != VM_REQ_RELEASE) ||
+			(vm_owns_hw && !sde_in_trusted_vm(sde_kms)))
 			rc = -EINVAL;
 		break;
 	default:

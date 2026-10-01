@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.
  */
 #define pr_fmt(fmt)	"%s:%d: " fmt, __func__, __LINE__
@@ -15,6 +15,7 @@
 #include <linux/wait.h>
 #include <linux/of.h>
 #include <linux/dma-mapping.h>
+#include <linux/version.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-event.h>
 #include <media/videobuf2-v4l2.h>
@@ -57,10 +58,10 @@
 #ifndef CONFIG_MSM_SDE_ROTATOR_INIT_ONLY
 static void sde_rotator_submit_handler(struct kthread_work *work);
 static void sde_rotator_retire_handler(struct kthread_work *work);
-#ifdef CONFIG_COMPAT
+#if IS_ENABLED(CONFIG_COMPAT)
 static long sde_rotator_compat_ioctl32(struct file *file,
 	unsigned int cmd, unsigned long arg);
-#endif
+#endif /* CONFIG_COMPAT */
 
 /*
  * sde_rotator_ctx_from_fh - Get rotator context from v4l2 fh.
@@ -530,14 +531,13 @@ static const struct vb2_ops sde_rotator_vb2_q_ops = {
 
 /*
  * sde_rotator_get_userptr - Map and get buffer handler for user pointer buffer.
+ * @vb: video buffer
  * @dev: device allocated in buf_setup.
  * @vaddr: Virtual addr passed from userpsace (in our case ion fd)
  * @size: Size of the buffer
- * @dma_dir: DMA data direction of the given buffer.
  */
-static void *sde_rotator_get_userptr(struct device *dev,
-	unsigned long vaddr, unsigned long size,
-	enum dma_data_direction dma_dir)
+static void *sde_rotator_get_userptr(struct vb2_buffer *vb, struct device *dev,
+	unsigned long vaddr, unsigned long size)
 {
 	struct sde_rotator_ctx *ctx = (struct sde_rotator_ctx *)dev;
 	struct sde_rotator_device *rot_dev = ctx->rot_dev;
@@ -1910,9 +1910,9 @@ static const struct v4l2_file_operations sde_rotator_fops = {
 	.release        = sde_rotator_release,
 	.poll           = sde_rotator_poll,
 	.unlocked_ioctl = video_ioctl2,
-#ifdef CONFIG_COMPAT
+#if IS_ENABLED(CONFIG_COMPAT)
 	.compat_ioctl32 = sde_rotator_compat_ioctl32,
-#endif
+#endif /* CONFIG_COMPAT */
 };
 
 /*
@@ -2741,7 +2741,7 @@ static long sde_rotator_private_ioctl(struct file *file, void *fh,
 	return 0;
 }
 
-#ifdef CONFIG_COMPAT
+#if IS_ENABLED(CONFIG_COMPAT)
 /*
  * sde_rotator_compat_ioctl32 - Compat ioctl handler function.
  * @file: Pointer to file struct.
@@ -2810,7 +2810,7 @@ ioctl32_error:
 	SDEDEV_ERR(ctx->rot_dev->dev, "error handling ioctl32 cmd:%x\n", cmd);
 	return -EFAULT;
 }
-#endif
+#endif /* CONFIG_COMPAT */
 
 static int sde_rotator_ctrl_subscribe_event(struct v4l2_fh *fh,
 				const struct v4l2_event_subscription *sub)
@@ -3622,3 +3622,7 @@ void sde_rotator_unregister(void)
 {
 	platform_driver_unregister(&rotator_driver);
 }
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+MODULE_IMPORT_NS(DMA_BUF);
+#endif

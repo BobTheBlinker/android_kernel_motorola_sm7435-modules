@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -20,9 +20,9 @@
 #ifndef __SDE_KMS_H__
 #define __SDE_KMS_H__
 
-#include <linux/msm_ion.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_qos.h>
+#include <drm/drm_framebuffer.h>
 
 #include "msm_drv.h"
 #include "msm_kms.h"
@@ -128,7 +128,7 @@
 #define SDE_KMS_OPS_PREPARE_PLANE_FB		BIT(3)
 
 /* ESD status check interval in miliseconds */
-#define STATUS_CHECK_INTERVAL_MS 8000
+#define STATUS_CHECK_INTERVAL_MS 5000
 
 /**
  * enum sde_kms_smmu_state:	smmu state
@@ -310,7 +310,6 @@ struct sde_kms {
 	bool first_kickoff;
 	bool qdss_enabled;
 	bool pm_suspend_clk_dump;
-	bool freeze_late;
 
 	cpumask_t irq_cpu_mask;
 	atomic_t irq_vote_count;
@@ -318,6 +317,9 @@ struct sde_kms {
 	struct irq_affinity_notify affinity_notify;
 
 	struct sde_vm *vm;
+
+	unsigned long ipcc_base_addr;
+	u32 debugfs_hw_fence;
 };
 
 struct vsync_info {
@@ -403,18 +405,18 @@ static inline bool sde_kms_is_secure_session_inprogress(struct sde_kms *sde_kms)
 {
 	bool ret = false;
 
-	if (!sde_kms)
+	if (!sde_kms || !sde_kms->catalog)
 		return false;
 
 	mutex_lock(&sde_kms->secure_transition_lock);
-	if (((sde_kms->catalog->sui_ns_allowed) &&
-		(sde_kms->smmu_state.secure_level == SDE_DRM_SEC_ONLY) &&
-			((sde_kms->smmu_state.state == DETACHED_SEC) ||
-				(sde_kms->smmu_state.state == DETACH_SEC_REQ) ||
-				(sde_kms->smmu_state.state == ATTACH_SEC_REQ)))
-		|| (((sde_kms->smmu_state.state == DETACHED) ||
-			(sde_kms->smmu_state.state == DETACH_ALL_REQ) ||
-			(sde_kms->smmu_state.state == ATTACH_ALL_REQ))))
+	if (((test_bit(SDE_FEATURE_SUI_NS_ALLOWED, sde_kms->catalog->features)) &&
+	     (sde_kms->smmu_state.secure_level == SDE_DRM_SEC_ONLY) &&
+	     ((sde_kms->smmu_state.state == DETACHED_SEC) ||
+	      (sde_kms->smmu_state.state == DETACH_SEC_REQ) ||
+	      (sde_kms->smmu_state.state == ATTACH_SEC_REQ))) ||
+	    (((sde_kms->smmu_state.state == DETACHED) ||
+	      (sde_kms->smmu_state.state == DETACH_ALL_REQ) ||
+	      (sde_kms->smmu_state.state == ATTACH_ALL_REQ))))
 		ret = true;
 	mutex_unlock(&sde_kms->secure_transition_lock);
 
@@ -434,7 +436,7 @@ static inline bool sde_kms_is_vbif_operation_allowed(struct sde_kms *sde_kms)
 	if (!sde_kms)
 		return false;
 
-	if (!sde_kms->catalog->sui_misr_supported)
+	if (!test_bit(SDE_FEATURE_SUI_MISR, sde_kms->catalog->features))
 		return true;
 
 	return !sde_kms_is_secure_session_inprogress(sde_kms);
@@ -451,7 +453,7 @@ static inline bool sde_kms_is_cp_operation_allowed(struct sde_kms *sde_kms)
 	if (!sde_kms || !sde_kms->catalog)
 		return false;
 
-	if (sde_kms->catalog->sui_ns_allowed)
+	if (test_bit(SDE_FEATURE_SUI_NS_ALLOWED, sde_kms->catalog->features))
 		return true;
 
 	return !sde_kms_is_secure_session_inprogress(sde_kms);
@@ -590,6 +592,19 @@ void sde_kms_info_append(struct sde_kms_info *info,
 void sde_kms_info_append_format(struct sde_kms_info *info,
 		uint32_t pixel_format,
 		uint64_t modifier);
+
+/**
+ * sde_kms_info_append_dnsc_blur_filter_info - append dnsc_blur filters code to 'sde_kms_info'
+ * Usage:
+ *      sde_kms_info_start(key)
+ *      sde_kms_info_append_dnsc_blur_filter_info(info, ratio)
+ *      ...
+ *      sde_kms_info_stop
+ * @info: Pointer to sde_kms_info structure
+ * @filter: Pointer to dnsc_blur filter info
+ */
+void sde_kms_info_append_dnsc_blur_filter_info(struct sde_kms_info *info,
+		struct sde_dnsc_blur_filter_info *filter);
 
 /**
  * sde_kms_info_stop - finish adding key to 'sde_kms_info'

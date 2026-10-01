@@ -22,6 +22,7 @@ struct sde_hw_wb_cfg {
 	struct sde_rect roi;
 	struct sde_rect crop;
 	bool is_secure;
+	bool rotate_90;
 };
 
 /**
@@ -49,17 +50,49 @@ struct sde_hw_wb_cdp_cfg {
 };
 
 /**
+ * enum sde_hw_wb_qos_mode: enumeration of available QOS modes for WB
+ * @SDE_WB_QOS_MODE_STATIC: static qos mode same as existing NRT qos mode
+ * @SDE_WB_QOS_MODE_DYNAMIC: new qos mode to support rotation for real time
+ */
+enum sde_hw_wb_qos_mode {
+	SDE_WB_QOS_MODE_STATIC,
+	SDE_WB_QOS_MODE_DYNAMIC,
+};
+
+/**
  * struct sde_hw_wb_qos_cfg : Writeback pipe QoS configuration
  * @danger_lut: LUT for generate danger level based on fill level
  * @safe_lut: LUT for generate safe level based on fill level
  * @creq_lut: LUT for generate creq level based on fill level
+ * @bytes_per_clk: WB output bytes per XO clock value used in rotation
+ * @qos_mode: enum value mapped for selecting WB QOS mode
  * @danger_safe_en: enable danger safe generation
  */
 struct sde_hw_wb_qos_cfg {
 	u32 danger_lut;
 	u32 safe_lut;
 	u64 creq_lut;
+	u32 bytes_per_clk;
+	enum sde_hw_wb_qos_mode qos_mode;
 	bool danger_safe_en;
+};
+
+/**
+ * struct sde_hw_wb_sc_cfg - system cache configuration
+ * @wr_en: system cache read enable
+ * @wr_scid: system cache read block id
+ * @wr_noallocate: system cache read no allocate attribute
+ * @wr_op_type: system cache read operation type
+ * @flags: dirty flags to change the configuration
+ * @type: sys cache type
+ */
+struct sde_hw_wb_sc_cfg {
+	bool wr_en;
+	u32 wr_scid;
+	bool wr_noallocate;
+	u32 wr_op_type;
+	u32 flags;
+	enum sde_sys_cache_type type;
 };
 
 /**
@@ -154,6 +187,13 @@ struct sde_hw_wb_ops {
 		const enum sde_cwb data_src, int tap_location, bool enable);
 
 	/**
+	 * setup_sys_cache - setup system cache configuration
+	 * @ctx: Pointer to wb context
+	 * @cfg: Pointer to wb system cache configuration
+	 */
+	void (*setup_sys_cache)(struct sde_hw_wb *ctx, struct sde_hw_wb_sc_cfg *cfg);
+
+	/**
 	 * program_cwb_dither_ctrl - program cwb dither block config
 	 * @ctx: Pointer to wb context
 	 * @dcwb_idx: Current Ping-Pong CWB block index to program
@@ -163,6 +203,31 @@ struct sde_hw_wb_ops {
 	 */
 	void (*program_cwb_dither_ctrl)(struct sde_hw_wb *ctx,
 		const enum sde_dcwb dcwb_idx, void *cfg, size_t len, bool enable);
+
+	/**
+	 * get_line_count - get current wb output linecount
+	 * @ctx: Pointer to wb context
+	 */
+	u32 (*get_line_count)(struct sde_hw_wb *ctx);
+
+	/**
+	 * set_prog_line_count - set wb programmable line
+	 * @ctx: Pointer to wb context
+	 * @line_count: programmable line-count value
+	 */
+	void (*set_prog_line_count)(struct sde_hw_wb *ctx, u32 line_count);
+
+	/**
+	 * get_ubwc_error - get ubwc error status
+	 * @ctx: Pointer to wb context
+	 */
+	u32 (*get_ubwc_error)(struct sde_hw_wb *ctx);
+
+	/**
+	 * clear_ubwc_error - clear ubwc error status
+	 * @ctx: Pointer to wb context
+	 */
+	void (*clear_ubwc_error)(struct sde_hw_wb *ctx);
 };
 
 /**
@@ -180,7 +245,6 @@ struct sde_hw_wb_ops {
  * @dcwb_pp_hw: DCWB PingPong control hwio details
  */
 struct sde_hw_wb {
-	struct sde_hw_blk base;
 	struct sde_hw_blk_reg_map hw;
 	struct sde_mdss_cfg *catalog;
 	struct sde_mdp_cfg *mdp;
@@ -194,18 +258,18 @@ struct sde_hw_wb {
 
 	struct sde_hw_mdp *hw_mdp;
 	struct sde_hw_blk_reg_map cwb_hw;
-	struct sde_hw_blk_reg_map dcwb_hw;
+	struct sde_hw_blk_reg_map dcwb_hw[MAX_CWB_BLOCKS];
 	struct sde_hw_pingpong dcwb_pp_hw[DCWB_MAX - DCWB_0];
 };
 
 /**
- * sde_hw_wb - convert base object sde_hw_base to container
- * @hw: Pointer to base hardware block
+ * to_sde_hw_wb - convert base hw object to sde_hw_wb container
+ * @hw: Pointer to hardware block register map object
  * return: Pointer to hardware block container
  */
-static inline struct sde_hw_wb *to_sde_hw_wb(struct sde_hw_blk *hw)
+static inline struct sde_hw_wb *to_sde_hw_wb(struct sde_hw_blk_reg_map *hw)
 {
-	return container_of(hw, struct sde_hw_wb, base);
+	return container_of(hw, struct sde_hw_wb, hw);
 }
 
 /**
@@ -216,7 +280,7 @@ static inline struct sde_hw_wb *to_sde_hw_wb(struct sde_hw_blk *hw)
  * @hw_mdp: pointer to mdp top hw driver object
  * @clk_client: pointer to vbif clk client info
  */
-struct sde_hw_wb *sde_hw_wb_init(enum sde_wb idx,
+struct sde_hw_blk_reg_map *sde_hw_wb_init(enum sde_wb idx,
 		void __iomem *addr,
 		struct sde_mdss_cfg *m,
 		struct sde_hw_mdp *hw_mdp,
@@ -224,8 +288,8 @@ struct sde_hw_wb *sde_hw_wb_init(enum sde_wb idx,
 
 /**
  * sde_hw_wb_destroy(): Destroy writeback hw driver object.
- * @hw_wb:  Pointer to writeback hw driver object
+ * @hw:  Pointer to hardware block register map object
  */
-void sde_hw_wb_destroy(struct sde_hw_wb *hw_wb);
+void sde_hw_wb_destroy(struct sde_hw_blk_reg_map *hw);
 
 #endif /*_SDE_HW_WB_H */

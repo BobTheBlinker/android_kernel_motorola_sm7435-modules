@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+/*
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -48,7 +49,8 @@
 #define SDE_MDP_HW_REV_600	SDE_MDP_REV(6, 0, 0)    /* msmnile+ v1.0 */
 #define SDE_MDP_HW_REV_630	SDE_MDP_REV(6, 3, 0)	/* bengal v1.0 */
 #define SDE_MDP_HW_REV_660	SDE_MDP_REV(6, 6, 0)	/* holi */
-#define SDE_MDP_HW_REV_860	SDE_MDP_REV(8, 6, 0)	/* Ravelin */
+#define SDE_MDP_HW_REV_690	SDE_MDP_REV(6, 9, 0)	/* blair */
+#define SDE_MDP_HW_REV_860      SDE_MDP_REV(8, 6, 0)    /* Ravelin */
 
 #define SDE_MDP_VBIF_4_LEVEL_REMAPPER	4
 #define SDE_MDP_VBIF_8_LEVEL_REMAPPER	8
@@ -311,14 +313,14 @@ int sde_rotator_base_init(struct sde_rot_data_type **pmdata,
 
 void sde_rotator_base_destroy(struct sde_rot_data_type *data);
 
-#ifdef CONFIG_MSM_SDE_ROTATOR
+#if IS_ENABLED(CONFIG_MSM_SDE_ROTATOR)
 struct sde_rot_data_type *sde_rot_get_mdata(void);
 #else
 static inline struct sde_rot_data_type *sde_rot_get_mdata(void)
 {
 	return NULL;
 }
-#endif
+#endif /* CONFIG_MSM_SDE_ROTATOR */
 
 struct reg_bus_client *sde_reg_bus_vote_client_create(char *client_name);
 
@@ -341,8 +343,6 @@ void sde_mdp_halt_vbif_xin(struct sde_mdp_vbif_halt_params *params);
 
 int sde_mdp_init_vbif(void);
 const struct sde_rot_bus_data *sde_get_rot_reg_bus_value(u32 usecase_ndx);
-
-int sde_mdp_parse_dt_prop_len(struct platform_device *pdev, char *prop_name);
 
 #define SDE_VBIF_WRITE(mdata, offset, value) \
 		(sde_reg_w(&mdata->vbif_nrt_io, offset, value, 0))

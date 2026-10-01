@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _DSI_CTRL_HW_H_
@@ -43,6 +43,29 @@
 #define DSI_CTRL_HW_CMD_WAIT_FOR_TRIGGER            0x1
 
 /**
+ * enum dsi_ctrl_tpg_pattern - type of TPG pattern
+ * @DSI_CTRL_TPG_COUNTER:
+ * @DSI_CTRL_TPG_FIXED:
+ * @DSI_CTRL_TPG_COLOR_RAMP_64L_64P:
+ * @DSI_CTRL_TPG_COLOR_RAMP_64L_256P:
+ * @DSI_CTRL_TPG_GRAYSCALE_RAMP:
+ * @DSI_CTRL_TPG_COLOR_SQUARE:
+ * @DSI_CTRL_TPG_CHECKERED_RECTANGLE:
+ * @DSI_CTRL_TPG_BASIC_COLOR_CHANGING:
+ */
+enum dsi_ctrl_tpg_pattern {
+	DSI_CTRL_TPG_COUNTER = 0,
+	DSI_CTRL_TPG_FIXED,
+	DSI_CTRL_TPG_COLOR_RAMP_64L_64P,
+	DSI_CTRL_TPG_COLOR_RAMP_64L_256P,
+	DSI_CTRL_TPG_BLACK_WHITE_VERTICAL_LINES,
+	DSI_CTRL_TPG_GRAYSCALE_RAMP,
+	DSI_CTRL_TPG_COLOR_SQUARE,
+	DSI_CTRL_TPG_CHECKERED_RECTANGLE,
+	DSI_CTRL_TPG_BASIC_COLOR_CHANGING
+};
+
+/**
  * enum dsi_ctrl_version - version of the dsi host controller
  * @DSI_CTRL_VERSION_UNKNOWN: Unknown controller version
  * @DSI_CTRL_VERSION_2_2:     DSI host v2.2 controller
@@ -51,6 +74,7 @@
  * @DSI_CTRL_VERSION_2_5:     DSI host v2.5 controller
  * @DSI_CTRL_VERSION_2_6:     DSI host v2.6 controller
  * @DSI_CTRL_VERSION_2_7:     DSI host v2.7 controller
+ * @DSI_CTRL_VERSION_2_8:     DSI host v2.8 controller
  * @DSI_CTRL_VERSION_MAX:     max version
  */
 enum dsi_ctrl_version {
@@ -61,6 +85,7 @@ enum dsi_ctrl_version {
 	DSI_CTRL_VERSION_2_5,
 	DSI_CTRL_VERSION_2_6,
 	DSI_CTRL_VERSION_2_7,
+	DSI_CTRL_VERSION_2_8,
 	DSI_CTRL_VERSION_MAX
 };
 
@@ -93,12 +118,14 @@ enum dsi_ctrl_hw_features {
  * @DSI_TEST_PATTERN_FIXED:     Test pattern is fixed, based on init value.
  * @DSI_TEST_PATTERN_INC:       Incremental test pattern, base on init value.
  * @DSI_TEST_PATTERN_POLY:      Pattern generated from polynomial and init val.
+ * @DSI_TEST_PATTERN_GENERAL:   MDSS general test pattern.
  * @DSI_TEST_PATTERN_MAX:
  */
 enum dsi_test_pattern {
 	DSI_TEST_PATTERN_FIXED = 0,
 	DSI_TEST_PATTERN_INC,
 	DSI_TEST_PATTERN_POLY,
+	DSI_TEST_PATTERN_GENERAL,
 	DSI_TEST_PATTERN_MAX
 };
 
@@ -728,8 +755,12 @@ struct dsi_ctrl_hw_ops {
 	 * test_pattern_enable() - enable test pattern engine
 	 * @ctrl:          Pointer to the controller host hardware.
 	 * @enable:        Enable/Disable test pattern engine.
+	 * @pattern:       Type of TPG pattern
+	 * @panel_mode:    DSI operation mode
 	 */
-	void (*test_pattern_enable)(struct dsi_ctrl_hw *ctrl, bool enable);
+	void (*test_pattern_enable)(struct dsi_ctrl_hw *ctrl, bool enable,
+					   enum dsi_ctrl_tpg_pattern pattern,
+					   enum dsi_op_mode panel_mode);
 
 	/**
 	 * clear_phy0_ln_err() - clear DSI PHY lane-0 errors
@@ -924,8 +955,8 @@ struct dsi_ctrl_hw_ops {
  *                          controller.
  * @supported_interrupts:   Number of supported interrupts.
  * @supported_errors:       Number of supported errors.
- * @phy_isolation_enabled:    A boolean property allows to isolate the phy from
- *                          dsi controller and run only dsi controller.
+ * @phy_pll_bypass:         A boolean property that enables skipping HW access in
+ *                          PHY/PLL drivers for running on emulation platforms.
  * @null_insertion_enabled:  A boolean property to allow dsi controller to
  *                           insert null packet.
  * @widebus_support:        48 bit wide data bus is supported.
@@ -950,7 +981,7 @@ struct dsi_ctrl_hw {
 	u32 supported_interrupts;
 	u64 supported_errors;
 
-	bool phy_isolation_enabled;
+	bool phy_pll_bypass;
 	bool null_insertion_enabled;
 	bool widebus_support;
 	bool reset_trig_ctrl;

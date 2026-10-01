@@ -820,8 +820,8 @@ static int __cam_req_mgr_check_next_req_slot(
 	 */
 	if (slot->status == CRM_SLOT_STATUS_REQ_APPLIED) {
 		CAM_WARN(CAM_CRM,
-			"slot [idx: %d req: %lld last_applied_idx: %d] was not reset, reset it now",
-			idx, in_q->slot[idx].req_id, in_q->last_applied_idx);
+			"slot[%d] wasn't reset, reset it now",
+			idx);
 		if (in_q->last_applied_idx == idx) {
 			CAM_WARN(CAM_CRM,
 				"last_applied_idx: %d",
@@ -2992,7 +2992,6 @@ void __cam_req_mgr_apply_on_bubble(
 int cam_req_mgr_process_error(void *priv, void *data)
 {
 	int                                  rc = 0, idx = -1;
-	int                                  i, slot_diff;
 	struct cam_req_mgr_error_notify     *err_info = NULL;
 	struct cam_req_mgr_core_link        *link = NULL;
 	struct cam_req_mgr_req_queue        *in_q = NULL;
@@ -3024,8 +3023,8 @@ int cam_req_mgr_process_error(void *priv, void *data)
 				"req_id %lld not found in input queue",
 				err_info->req_id);
 		} else {
-			CAM_DBG(CAM_CRM, "req_id %lld found at idx %d last_applied %d",
-				err_info->req_id, idx, in_q->last_applied_idx);
+			CAM_DBG(CAM_CRM, "req_id %lld found at idx %d",
+				err_info->req_id, idx);
 			slot = &in_q->slot[idx];
 			if (!slot->recover) {
 				CAM_WARN(CAM_CRM,
@@ -3052,31 +3051,13 @@ int cam_req_mgr_process_error(void *priv, void *data)
 				in_q->slot[idx].sync_mode = 0;
 			}
 
-			/*
-			* Reset till last applied, even if there are scheduling delays
-			* we start fresh from the request on which bubble has
-			* been reported
-			*/
+			/* The next req may also be applied */
 			idx = in_q->rd_idx;
-			if (in_q->last_applied_idx >= 0) {
-				slot_diff = in_q->last_applied_idx - idx;
-				if (slot_diff < 0)
-					slot_diff += link->req.l_tbl->num_slots;
-			} else {
-				/* Next req at the minimum may be applied */
-				slot_diff = 1;
-			}
+			__cam_req_mgr_inc_idx(&idx, 1,
+				link->req.l_tbl->num_slots);
 
-			for (i = 0; i < slot_diff; i++) {
-				__cam_req_mgr_inc_idx(&idx, 1,
-					link->req.l_tbl->num_slots);
-
-				CAM_DBG(CAM_CRM,
-					"Recovery on idx: %d reset slot [idx: %d status: %d]",
-					in_q->rd_idx, idx, in_q->slot[idx].status);
-				if (in_q->slot[idx].status == CRM_SLOT_STATUS_REQ_APPLIED)
-					in_q->slot[idx].status = CRM_SLOT_STATUS_REQ_ADDED;
-			}
+			if (in_q->slot[idx].status == CRM_SLOT_STATUS_REQ_APPLIED)
+				in_q->slot[idx].status = CRM_SLOT_STATUS_REQ_ADDED;
 
 			spin_lock_bh(&link->link_state_spin_lock);
 			link->state = CAM_CRM_LINK_STATE_ERR;

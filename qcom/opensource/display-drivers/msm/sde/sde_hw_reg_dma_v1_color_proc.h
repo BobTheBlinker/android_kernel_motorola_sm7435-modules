@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
  */
 
@@ -89,6 +90,13 @@ void reg_dmav1_setup_dspp_pa_hsicv17(struct sde_hw_dspp *ctx, void *cfg);
  * @cfg: pointer to struct sde_hw_cp_cfg
  */
 void reg_dmav1_setup_dspp_sixzonev17(struct sde_hw_dspp *ctx, void *cfg);
+
+/**
+ * reg_dmav2_setup_dspp_sixzonev2() - sixzone v2 impl using reg dma v2.
+ * @ctx: dspp ctx info
+ * @cfg: pointer to struct sde_hw_cp_cfg
+ */
+void reg_dmav2_setup_dspp_sixzonev2(struct sde_hw_dspp *ctx, void *cfg);
 
 /**
  * reg_dmav1_setup_dspp_memcol_skinv17() - memcol skin v17 impl using
@@ -252,12 +260,27 @@ void reg_dmav1_setup_ltm_roiv1(struct sde_hw_dspp *ctx, void *cfg);
 void reg_dmav1_setup_ltm_vlutv1(struct sde_hw_dspp *ctx, void *cfg);
 
 /**
- * reg_dmav1_setup_rc_datav1() - RC DATA v1 implementation using reg dma v1.
+ * reg_dmav1_setup_ltm_vlutv1_2() - Same as v1 except ltm merge mode setting.
+ * @ctx: dspp ctx info
+ * @cfg: pointer to struct sde_hw_cp_cfg
+ */
+void reg_dmav1_setup_ltm_vlutv1_2(struct sde_hw_dspp *ctx, void *cfg);
+
+/**
+ * reg_dmav1_setup_rc_pu_configv1() - RC PU CFG v1 implementation using reg dma v1.
  * @ctx: dspp ctx info
  * @cfg: pointer to struct sde_hw_cp_cfg
  * @returns: 0 if success, non-zero otherwise
  */
-int reg_dmav1_setup_rc_datav1(struct sde_hw_dspp *ctx, void *cfg);
+int reg_dmav1_setup_rc_pu_configv1(struct sde_hw_dspp *ctx, void *cfg);
+
+/**
+ * reg_dmav1_setup_rc_mask_configv1() - RC Mask CFG v1 implementation using reg dma v1.
+ * @ctx: dspp ctx info
+ * @cfg: pointer to struct sde_hw_cp_cfg
+ * @returns: 0 if success, non-zero otherwise
+ */
+int reg_dmav1_setup_rc_mask_configv1(struct sde_hw_dspp *ctx, void *cfg);
 
 /**
  * reg_dmav1_deinit_ltm_ops() - deinitialize the ltm feature op for sde v4
@@ -297,11 +320,32 @@ void reg_dmav2_setup_dspp_3d_gamutv43(struct sde_hw_dspp *ctx, void *cfg);
 void reg_dmav2_setup_vig_gamutv61(struct sde_hw_pipe *ctx, void *cfg);
 
 /**
+ * reg_dmav2_init_spr_op_v1() - initialize spr sub-feature buffer for reg dma v2.
+ * @feature: SPR sub-feature
+ * @dspp_idx: dspp idx to allocate for
+ */
+int reg_dmav2_init_spr_op_v1(int feature, enum sde_dspp dspp_idx);
+
+/**
  * reg_dmav1_setup_spr_init_cfgv1 - function to configure spr through LUTDMA
  * @ctx: Pointer to dspp context
  * @cfg: Pointer to configuration
  */
 void reg_dmav1_setup_spr_init_cfgv1(struct sde_hw_dspp *ctx, void *cfg);
+
+/**
+ * reg_dmav1_setup_spr_init_cfgv2 - function to configure spr v2 through LUTDMA
+ * @ctx: Pointer to dspp context
+ * @cfg: Pointer to configuration
+ */
+void reg_dmav1_setup_spr_init_cfgv2(struct sde_hw_dspp *ctx, void *cfg);
+
+/**
+ * reg_dmav1_setup_spr_udc_cfgv2 - function to configure spr v2 UDC through LUTDMA
+ * @ctx: Pointer to dspp context
+ * @cfg: Pointer to configuration
+ */
+void reg_dmav1_setup_spr_udc_cfgv2(struct sde_hw_dspp *ctx, void *cfg);
 
 /**
  * reg_dmav1_setup_spr_pu_cfgv1 - function to configure spr pu through LUTDMA
@@ -311,10 +355,31 @@ void reg_dmav1_setup_spr_init_cfgv1(struct sde_hw_dspp *ctx, void *cfg);
 void reg_dmav1_setup_spr_pu_cfgv1(struct sde_hw_dspp *ctx, void *cfg);
 
 /**
+ * reg_dmav1_setup_spr_pu_cfgv2 - function to configure spr v2 pu through LUTDMA
+ * @ctx: Pointer to dspp context
+ * @cfg: Pointer to configuration
+ */
+void reg_dmav1_setup_spr_pu_cfgv2(struct sde_hw_dspp *ctx, void *cfg);
+
+/**
  * reg_dmav1_setup_demurav1() - function to set up the demurav1 configuration.
  * @ctx: dspp ctx info
  * @cfg: pointer to struct sde_hw_cp_cfg
  */
 void reg_dmav1_setup_demurav1(struct sde_hw_dspp *ctx, void *cfg);
+
+/**
+ * reg_dmav1_setup_demurav2() - function to set up the demurav2 configuration.
+ * @ctx: dspp ctx info
+ * @cfg: pointer to struct sde_hw_cp_cfg
+ */
+void reg_dmav1_setup_demurav2(struct sde_hw_dspp *ctx, void *cfg);
+
+/**
+ * reg_dmav1_setup_demura_cfg0_param2() - function to set up the demura cfg0 param2 configuration.
+ * @ctx: dspp ctx info
+ * @cfg: pointer to struct sde_hw_cp_cfg
+ */
+void reg_dmav1_setup_demura_cfg0_param2(struct sde_hw_dspp *ctx, void *cfg);
 
 #endif /* _SDE_HW_REG_DMA_V1_COLOR_PROC_H */

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
+#define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 #include "sde_hwio.h"
 #include "sde_hw_catalog.h"
 #include "sde_hw_top.h"
@@ -59,6 +60,18 @@
 
 #define DCE_SEL                           0x450
 
+#define MDP_SID_V2_VIG0          0x000
+#define MDP_SID_V2_DMA0          0x040
+#define MDP_SID_V2_CTL_0         0x100
+#define MDP_SID_V2_LTM0          0x400
+#define MDP_SID_V2_IPC_READ      0x200
+#define MDP_SID_V2_LUTDMA_RD     0x300
+#define MDP_SID_V2_LUTDMA_WR     0x304
+#define MDP_SID_V2_LUTDMA_SB_RD  0x308
+#define MDP_SID_V2_LUTDMA_VM_0   0x310
+#define MDP_SID_V2_DSI0          0x500
+#define MDP_SID_V2_DSI1          0x504
+
 #define MDP_SID_VIG0			  0x0
 #define MDP_SID_VIG1			  0x4
 #define MDP_SID_VIG2			  0x8
@@ -74,6 +87,42 @@
 
 #define ROT_SID_ID_VAL			  0x1c
 
+/* HW Fences */
+#define MDP_CTL_HW_FENCE_CTRL			0x14000
+#define MDP_CTL_HW_FENCE_ID_START_ADDR		0x14004
+#define MDP_CTL_HW_FENCE_ID_STATUS		0x14008
+#define MDP_CTL_HW_FENCE_ID_TIMESTAMP_CTRL	0x1400c
+#define MDP_CTL_HW_FENCE_INPUT_START_TIMESTAMP0	0x14010
+#define MDP_CTL_HW_FENCE_INPUT_START_TIMESTAMP1	0x14014
+#define MDP_CTL_HW_FENCE_INPUT_END_TIMESTAMP0	0x14018
+#define MDP_CTL_HW_FENCE_INPUT_END_TIMESTAMP1	0x1401c
+#define MDP_CTL_HW_FENCE_QOS			0x14020
+#define MDP_CTL_HW_FENCE_IDn_ISR		0x14050
+#define MDP_CTL_HW_FENCE_IDm_ADDR		0x14054
+#define MDP_CTL_HW_FENCE_IDm_DATA		0x14058
+#define MDP_CTL_HW_FENCE_IDm_MASK		0x1405c
+#define MDP_CTL_HW_FENCE_IDm_ATTR		0x14060
+
+#define HW_FENCE_IPCC_PROTOCOLp_CLIENTc_SEND(ba, p, c) ((ba+0xc) + (0x40000*p) + (0x1000*c))
+#define HW_FENCE_IPCC_PROTOCOLp_CLIENTc_RECV_ID(ba, p, c) ((ba+0x10) + (0x40000*p) + (0x1000*c))
+#define MDP_CTL_HW_FENCE_ID_OFFSET_n(base, n) (base + (0x14*n))
+#define MDP_CTL_HW_FENCE_ID_OFFSET_m(base, m) (base + (0x14*m))
+#define MDP_CTL_FENCE_ATTRS(devicetype, size, resp_req) \
+	(((resp_req & 0x1) << 16)  | ((size & 0x7) << 4) | (devicetype & 0xf))
+#define MDP_CTL_FENCE_ISR_OP_CODE(opcode, op0, op1, op2) \
+	(((op2 & 0xff) << 24) | ((op1 & 0xff) << 16) | ((op0 & 0xff) << 8)  | (opcode & 0xff))
+
+#define HW_FENCE_DPU_INPUT_FENCE_START_N		0
+#define HW_FENCE_DPU_OUTPUT_FENCE_START_N		4
+
+#define HW_FENCE_IPCC_FENCE_PROTOCOL_ID 4
+#define HW_FENCE_DPU_FENCE_PROTOCOL_ID 3
+
+#define HW_FENCE_QOS_PRIORITY 0x7
+#define HW_FENCE_QOS_PRIORITY_LVL 0x0
+
+static int ppb_offset_map[PINGPONG_MAX] = {1, 0, 3, 2, 5, 4, 7, 7, 6, 6, -1, -1};
+
 static void sde_hw_setup_split_pipe(struct sde_hw_mdp *mdp,
 		struct split_pipe_cfg *cfg)
 {
@@ -86,7 +135,17 @@ static void sde_hw_setup_split_pipe(struct sde_hw_mdp *mdp,
 
 	c = &mdp->hw;
 
-	if (cfg->en) {
+	if (test_bit(SDE_MDP_PERIPH_TOP_0_REMOVED, &mdp->caps->features) && cfg->en) {
+		/* avoid programming of legacy bits like SW_TRG_MUX for new targets */
+		if (cfg->mode == INTF_MODE_CMD) {
+			lower_pipe |= BIT(mdp->caps->smart_panel_align_mode);
+
+			upper_pipe = lower_pipe;
+
+			if (cfg->pp_split_slave != INTF_MAX)
+				lower_pipe = FLD_SMART_PANEL_FREE_RUN;
+		}
+	} else if (cfg->en) {
 		if (cfg->mode == INTF_MODE_CMD) {
 			lower_pipe = FLD_SPLIT_DISPLAY_CMD;
 			/* interface controlling sw trigger */
@@ -202,7 +261,7 @@ static bool sde_hw_setup_clk_force_ctrl(struct sde_hw_mdp *mdp,
 }
 
 static int sde_hw_get_clk_ctrl_status(struct sde_hw_mdp *mdp,
-		enum sde_clk_ctrl_type clk_ctrl)
+		enum sde_clk_ctrl_type clk_ctrl, bool *status)
 {
 	struct sde_hw_blk_reg_map *c;
 	u32 reg_off, bit_off;
@@ -219,7 +278,8 @@ static int sde_hw_get_clk_ctrl_status(struct sde_hw_mdp *mdp,
 	reg_off = mdp->caps->clk_status[clk_ctrl].reg_off;
 	bit_off = mdp->caps->clk_status[clk_ctrl].bit_off;
 
-	return SDE_REG_READ(c, reg_off) & BIT(bit_off);
+	*status = SDE_REG_READ(c, reg_off) & BIT(bit_off);
+	return 0;
 }
 
 static void _update_vsync_source(struct sde_hw_mdp *mdp,
@@ -322,22 +382,26 @@ void sde_hw_reset_ubwc(struct sde_hw_mdp *mdp, struct sde_mdss_cfg *m)
 	c = mdp->hw;
 	c.blk_off = 0x0;
 	ubwc_dec_version = SDE_REG_READ(&c, UBWC_DEC_HW_VERSION);
-	ubwc_enc_version = m->ubwc_version;
+	/* global ubwc version used in input fb encoding */
+	ubwc_enc_version = m->ubwc_rev;
 
 	if (IS_UBWC_40_SUPPORTED(ubwc_dec_version) || IS_UBWC_43_SUPPORTED(ubwc_dec_version)) {
-		u32 ver = IS_UBWC_43_SUPPORTED(ubwc_dec_version) ? 3 : 2;
-		u32 mode = 1;
+		/* for UBWC 2.0 ver = 0, mode = 0 will be programmed */
+		u32 ver = 0;
+		u32 mode = 0;
 		u32 reg = (m->mdp[0].ubwc_swizzle & 0x7) |
 			((m->mdp[0].ubwc_static & 0x1) << 3) |
 			((m->mdp[0].highest_bank_bit & 0x7) << 4) |
 			((m->macrotile_mode & 0x1) << 12);
 
-		if (IS_UBWC_30_SUPPORTED(ubwc_enc_version)) {
+		if (IS_UBWC_43_SUPPORTED(ubwc_enc_version)) {
+			ver = 3;
+			mode = 1;
+		} else if (IS_UBWC_40_SUPPORTED(ubwc_enc_version)) {
+			ver = 2;
+			mode = 1;
+		} else if (IS_UBWC_30_SUPPORTED(ubwc_enc_version)) {
 			ver = 1;
-			mode = 0;
-		} else if (IS_UBWC_20_SUPPORTED(ubwc_enc_version)) {
-			ver = 0;
-			mode = 0;
 		}
 
 		SDE_REG_WRITE(&c, UBWC_STATIC, reg);
@@ -386,6 +450,47 @@ static void sde_hw_mdp_events(struct sde_hw_mdp *mdp, bool enable)
 	SDE_REG_WRITE(c, HW_EVENTS_CTL, enable);
 }
 
+void sde_hw_set_vm_sid_v2(struct sde_hw_sid *sid, u32 vm, struct sde_mdss_cfg *m)
+{
+	u32 offset = 0;
+	int i;
+
+	if (!sid || !m)
+		return;
+
+	for (i = 0; i < m->ctl_count; i++) {
+		offset = MDP_SID_V2_CTL_0 + (i * 4);
+		SDE_REG_WRITE(&sid->hw, offset, vm << 2);
+	}
+
+	for (i = 0; i < m->ltm_count; i++) {
+		offset = MDP_SID_V2_LTM0 + (i * 4);
+		SDE_REG_WRITE(&sid->hw, offset, vm << 2);
+	}
+
+	if (SDE_HW_MAJOR(sid->hw.hw_rev) >= SDE_HW_MAJOR(SDE_HW_VER_A00)) {
+		for (i = 0; i < m->ctl_count; i++) {
+			offset = MDP_SID_V2_LUTDMA_VM_0 + (i * 4);
+			SDE_REG_WRITE(&sid->hw, offset, vm << 2);
+		}
+	}
+
+	SDE_REG_WRITE(&sid->hw, MDP_SID_V2_IPC_READ, vm << 2);
+	SDE_REG_WRITE(&sid->hw, MDP_SID_V2_LUTDMA_RD, vm << 2);
+	SDE_REG_WRITE(&sid->hw, MDP_SID_V2_LUTDMA_WR, vm << 2);
+	SDE_REG_WRITE(&sid->hw, MDP_SID_V2_LUTDMA_SB_RD, vm << 2);
+	SDE_REG_WRITE(&sid->hw, MDP_SID_V2_DSI0, vm << 2);
+	SDE_REG_WRITE(&sid->hw, MDP_SID_V2_DSI1, vm << 2);
+}
+
+void sde_hw_set_vm_sid(struct sde_hw_sid *sid, u32 vm, struct sde_mdss_cfg *m)
+{
+	if (!sid || !m)
+		return;
+
+	SDE_REG_WRITE(&sid->hw, MDP_SID_XIN7, vm << 2);
+}
+
 struct sde_hw_sid *sde_hw_sid_init(void __iomem *addr,
 	u32 sid_len, const struct sde_mdss_cfg *m)
 {
@@ -398,8 +503,13 @@ struct sde_hw_sid *sde_hw_sid_init(void __iomem *addr,
 	c->hw.base_off = addr;
 	c->hw.blk_off = 0;
 	c->hw.length = sid_len;
-	c->hw.hwversion = m->hwversion;
+	c->hw.hw_rev = m->hw_rev;
 	c->hw.log_mask = SDE_DBG_MASK_SID;
+
+	if (IS_SDE_SID_REV_200(m->sid_rev))
+		c->ops.set_vm_sid = sde_hw_set_vm_sid_v2;
+	else
+		c->ops.set_vm_sid = sde_hw_set_vm_sid;
 
 	return c;
 }
@@ -413,29 +523,29 @@ void sde_hw_set_rotator_sid(struct sde_hw_sid *sid)
 	SDE_REG_WRITE(&sid->hw, MDP_SID_ROT_WR, ROT_SID_ID_VAL);
 }
 
-void sde_hw_set_sspp_sid(struct sde_hw_sid *sid, u32 pipe, u32 vm)
+void sde_hw_set_sspp_sid(struct sde_hw_sid *sid, u32 pipe, u32 vm,
+		struct sde_mdss_cfg *m)
 {
 	u32 offset = 0;
+	u32 vig_sid_offset = MDP_SID_VIG0;
+	u32 dma_sid_offset = MDP_SID_DMA0;
 
 	if (!sid)
 		return;
 
+	if (IS_SDE_SID_REV_200(m->sid_rev)) {
+		vig_sid_offset = MDP_SID_V2_VIG0;
+		dma_sid_offset = MDP_SID_V2_DMA0;
+	}
+
 	if (SDE_SSPP_VALID_VIG(pipe))
-		offset = MDP_SID_VIG0 + ((pipe - SSPP_VIG0) * 4);
+		offset = vig_sid_offset + ((pipe - SSPP_VIG0) * 4);
 	else if (SDE_SSPP_VALID_DMA(pipe))
-		offset = MDP_SID_DMA0 + ((pipe - SSPP_DMA0) * 4);
+		offset = dma_sid_offset + ((pipe - SSPP_DMA0) * 4);
 	else
 		return;
 
 	SDE_REG_WRITE(&sid->hw, offset, vm << 2);
-}
-
-void sde_hw_set_lutdma_sid(struct sde_hw_sid *sid, u32 vm)
-{
-	if (!sid)
-		return;
-
-	SDE_REG_WRITE(&sid->hw, MDP_SID_XIN7, vm << 2);
 }
 
 static void sde_hw_program_cwb_ppb_ctrl(struct sde_hw_mdp *mdp,
@@ -516,8 +626,267 @@ static u32 sde_hw_get_autorefresh_status(struct sde_hw_mdp *mdp, u32 intf_idx)
 	return autorefresh_status;
 }
 
-static void _setup_mdp_ops(struct sde_hw_mdp_ops *ops,
-		unsigned long cap)
+static void sde_hw_hw_fence_timestamp_ctrl(struct sde_hw_mdp *mdp, bool enable, bool clear)
+{
+	struct sde_hw_blk_reg_map c;
+	u32 val;
+
+	if (!mdp) {
+		SDE_ERROR("invalid mdp, won't enable hw-fence timestamping\n");
+		return;
+	}
+
+	/* start from the base-address of the mdss */
+	c = mdp->hw;
+	c.blk_off = 0x0;
+
+	val = SDE_REG_READ(&c, MDP_CTL_HW_FENCE_ID_TIMESTAMP_CTRL);
+	if (enable)
+		val |= BIT(0);
+	else
+		val &= ~BIT(0);
+	if (clear)
+		val |= BIT(1);
+	else
+		val &= ~BIT(1);
+	SDE_REG_WRITE(&c, MDP_CTL_HW_FENCE_ID_TIMESTAMP_CTRL, val);
+}
+
+static void sde_hw_input_hw_fence_status(struct sde_hw_mdp *mdp, u64 *s_val, u64 *e_val)
+{
+	u32 start_h, start_l, end_h, end_l;
+	struct sde_hw_blk_reg_map c;
+
+	if (!mdp || IS_ERR_OR_NULL(s_val) || IS_ERR_OR_NULL(e_val)) {
+		SDE_ERROR("invalid mdp\n");
+		return;
+	}
+
+	/* start from the base-address of the mdss */
+	c = mdp->hw;
+	c.blk_off = 0x0;
+
+	start_l = SDE_REG_READ(&c, MDP_CTL_HW_FENCE_INPUT_START_TIMESTAMP0);
+	start_h = SDE_REG_READ(&c, MDP_CTL_HW_FENCE_INPUT_START_TIMESTAMP1);
+	*s_val = (u64)start_h << 32 | start_l;
+
+	end_l = SDE_REG_READ(&c, MDP_CTL_HW_FENCE_INPUT_END_TIMESTAMP0);
+	end_h = SDE_REG_READ(&c, MDP_CTL_HW_FENCE_INPUT_END_TIMESTAMP1);
+	*e_val = (u64)end_h << 32 | end_l;
+
+	/* clear the timestamps */
+	sde_hw_hw_fence_timestamp_ctrl(mdp, false, true);
+
+	wmb(); /* make sure the timestamps are cleared */
+}
+
+static void _sde_hw_setup_hw_input_fences_config(u32 protocol_id, u32 client_phys_id,
+	unsigned long ipcc_base_addr, struct sde_hw_blk_reg_map *c)
+{
+	u32 val, offset;
+
+	/*select ipcc protocol id for dpu */
+	val = (protocol_id == HW_FENCE_IPCC_FENCE_PROTOCOL_ID) ?
+		HW_FENCE_DPU_FENCE_PROTOCOL_ID : protocol_id;
+	SDE_REG_WRITE(c, MDP_CTL_HW_FENCE_CTRL, val);
+
+	/* set QOS priority */
+	val = (HW_FENCE_QOS_PRIORITY_LVL << 4) | (HW_FENCE_QOS_PRIORITY & 0x7);
+	SDE_REG_WRITE(c, MDP_CTL_HW_FENCE_QOS, val);
+
+	/* configure the start of the FENCE_IDn_ISR ops for input and output fence isr's */
+	val = (HW_FENCE_DPU_OUTPUT_FENCE_START_N << 16) | (HW_FENCE_DPU_INPUT_FENCE_START_N & 0xFF);
+	SDE_REG_WRITE(c, MDP_CTL_HW_FENCE_ID_START_ADDR, val);
+
+	/* setup input fence isr */
+
+	/* configure the attribs for the isr read_reg op */
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_m(MDP_CTL_HW_FENCE_IDm_ADDR, 0);
+	val = HW_FENCE_IPCC_PROTOCOLp_CLIENTc_RECV_ID(ipcc_base_addr,
+				protocol_id, client_phys_id);
+	SDE_REG_WRITE(c, offset, val);
+
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_m(MDP_CTL_HW_FENCE_IDm_ATTR, 0);
+	val = MDP_CTL_FENCE_ATTRS(0x1, 0x2, 0x1);
+	SDE_REG_WRITE(c, offset, val);
+
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_m(MDP_CTL_HW_FENCE_IDm_MASK, 0);
+	SDE_REG_WRITE(c, offset, 0xFFFFFFFF);
+
+	/* configure the attribs for the write if eq data */
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_m(MDP_CTL_HW_FENCE_IDm_DATA, 1);
+	SDE_REG_WRITE(c, offset, 0x1);
+
+	/* program input-fence isr ops */
+
+	/* set read_reg op */
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_n(MDP_CTL_HW_FENCE_IDn_ISR,
+			HW_FENCE_DPU_INPUT_FENCE_START_N);
+	val = MDP_CTL_FENCE_ISR_OP_CODE(0x0, 0x0, 0x0, 0x0);
+	SDE_REG_WRITE(c, offset, val);
+
+	/* set write if eq op for flush ready */
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_n(MDP_CTL_HW_FENCE_IDn_ISR,
+			(HW_FENCE_DPU_INPUT_FENCE_START_N + 1));
+	val = MDP_CTL_FENCE_ISR_OP_CODE(0x7, 0x0, 0x1, 0x0);
+	SDE_REG_WRITE(c, offset, val);
+
+	/* set exit op */
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_n(MDP_CTL_HW_FENCE_IDn_ISR,
+			(HW_FENCE_DPU_INPUT_FENCE_START_N + 2));
+	val = MDP_CTL_FENCE_ISR_OP_CODE(0xf, 0x0, 0x0, 0x0);
+	SDE_REG_WRITE(c, offset, val);
+}
+
+static void sde_hw_setup_hw_fences_config(struct sde_hw_mdp *mdp, u32 protocol_id,
+	u32 client_phys_id, unsigned long ipcc_base_addr)
+{
+	u32 val, offset;
+	struct sde_hw_blk_reg_map c;
+
+	if (!mdp) {
+		SDE_ERROR("invalid mdp, won't configure hw-fences\n");
+		return;
+	}
+
+	c = mdp->hw;
+	c.blk_off = 0x0;
+
+	_sde_hw_setup_hw_input_fences_config(protocol_id, client_phys_id, ipcc_base_addr, &c);
+
+	/*setup output fence isr */
+
+	/* configure the attribs for the isr load_data op */
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_m(MDP_CTL_HW_FENCE_IDm_ADDR, 4);
+	val =  HW_FENCE_IPCC_PROTOCOLp_CLIENTc_SEND(ipcc_base_addr,
+			protocol_id, client_phys_id);
+	SDE_REG_WRITE(&c, offset, val);
+
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_m(MDP_CTL_HW_FENCE_IDm_ATTR, 4);
+	val = MDP_CTL_FENCE_ATTRS(0x1, 0x2, 0x0);
+	SDE_REG_WRITE(&c, offset, val);
+
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_m(MDP_CTL_HW_FENCE_IDm_MASK, 4);
+	SDE_REG_WRITE(&c, offset, 0xFFFFFFFF);
+
+	/* program output-fence isr ops */
+
+	/* set load_data op*/
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_n(MDP_CTL_HW_FENCE_IDn_ISR,
+		HW_FENCE_DPU_OUTPUT_FENCE_START_N);
+	val = MDP_CTL_FENCE_ISR_OP_CODE(0x6, 0x0, 0x4, 0x0);
+	SDE_REG_WRITE(&c, offset, val);
+
+	/* set write_reg op */
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_n(MDP_CTL_HW_FENCE_IDn_ISR,
+		(HW_FENCE_DPU_OUTPUT_FENCE_START_N + 1));
+	val = MDP_CTL_FENCE_ISR_OP_CODE(0x2, 0x4, 0x0, 0x0);
+	SDE_REG_WRITE(&c, offset, val);
+
+	/* set exit op */
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_n(MDP_CTL_HW_FENCE_IDn_ISR,
+		(HW_FENCE_DPU_OUTPUT_FENCE_START_N + 2));
+	val = MDP_CTL_FENCE_ISR_OP_CODE(0xf, 0x0, 0x0, 0x0);
+	SDE_REG_WRITE(&c, offset, val);
+}
+
+void sde_hw_top_set_ppb_fifo_size(struct sde_hw_mdp *mdp, u32 pp, u32 sz)
+{
+	struct sde_hw_blk_reg_map c;
+	u32 offset, val, pp_index;
+
+	if (!mdp) {
+		SDE_ERROR("invalid mdp instance\n");
+		return;
+	}
+
+	if (pp >= PINGPONG_MAX || ppb_offset_map[pp - PINGPONG_0] < 0) {
+		SDE_ERROR("invalid pingpong index:%d max:%d\n", pp, PINGPONG_MAX);
+		return;
+	}
+
+	pp_index = pp - PINGPONG_0;
+
+	c = mdp->hw;
+	offset = PPB_FIFO_SIZE + ((ppb_offset_map[pp_index] / 2) * 0x4);
+
+	spin_lock(&mdp->slock);
+	/* read, modify & update *respective 16 bit fields */
+	val = SDE_REG_READ(&c, offset);
+
+	/* divide by 4 as each fifo entry can store 4 pixels */
+	sz = (sz / MDP_PPB_FIFO_ENTRY_SIZE) & 0xFFFF;
+	sz = ppb_offset_map[pp_index] % 2 ? (sz << 16) : sz;
+	val = (ppb_offset_map[pp_index] % 2) ? (val & 0xFFFF) : (val & 0xFFFF0000);
+	SDE_REG_WRITE(&c, offset, val | sz);
+	spin_unlock(&mdp->slock);
+}
+
+static void sde_hw_setup_hw_fences_config_with_dir_write(struct sde_hw_mdp *mdp, u32 protocol_id,
+	u32 client_phys_id, unsigned long ipcc_base_addr)
+{
+	u32 val, offset;
+	struct sde_hw_blk_reg_map c;
+
+	if (!mdp) {
+		SDE_ERROR("invalid mdp, won't configure hw-fences\n");
+		return;
+	}
+
+	c = mdp->hw;
+	c.blk_off = 0x0;
+
+	_sde_hw_setup_hw_input_fences_config(protocol_id, client_phys_id, ipcc_base_addr, &c);
+
+	/*setup output fence isr */
+
+	/* configure the attribs for the isr load_data op */
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_m(MDP_CTL_HW_FENCE_IDm_ADDR, 4);
+	val =  HW_FENCE_IPCC_PROTOCOLp_CLIENTc_SEND(ipcc_base_addr,
+		protocol_id, client_phys_id);
+	SDE_REG_WRITE(&c, offset, val);
+
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_m(MDP_CTL_HW_FENCE_IDm_ATTR, 4);
+	val = MDP_CTL_FENCE_ATTRS(0x1, 0x2, 0x0);
+	SDE_REG_WRITE(&c, offset, val);
+
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_m(MDP_CTL_HW_FENCE_IDm_MASK, 4);
+	SDE_REG_WRITE(&c, offset, 0xFFFFFFFF);
+
+	/* program output-fence isr ops */
+
+	/* set load_data op*/
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_n(MDP_CTL_HW_FENCE_IDn_ISR,
+		HW_FENCE_DPU_OUTPUT_FENCE_START_N);
+	val = MDP_CTL_FENCE_ISR_OP_CODE(0x6, 0x0, 0x4, 0x0);
+	SDE_REG_WRITE(&c, offset, val);
+
+	/* set write_direct op */
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_n(MDP_CTL_HW_FENCE_IDn_ISR,
+		(HW_FENCE_DPU_OUTPUT_FENCE_START_N + 1));
+	val = MDP_CTL_FENCE_ISR_OP_CODE(0x3, 0x0, 0x0, 0x0);
+	SDE_REG_WRITE(&c, offset, val);
+
+	/* set wait op */
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_n(MDP_CTL_HW_FENCE_IDn_ISR,
+		(HW_FENCE_DPU_OUTPUT_FENCE_START_N + 2));
+	val = MDP_CTL_FENCE_ISR_OP_CODE(0x4, 0x1, 0x0, 0x0);
+	SDE_REG_WRITE(&c, offset, val);
+
+	/* set write_reg op */
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_n(MDP_CTL_HW_FENCE_IDn_ISR,
+		(HW_FENCE_DPU_OUTPUT_FENCE_START_N + 3));
+	val = MDP_CTL_FENCE_ISR_OP_CODE(0x2, 0x4, 0x0, 0x0);
+	SDE_REG_WRITE(&c, offset, val);
+
+	/* set exit op */
+	offset = MDP_CTL_HW_FENCE_ID_OFFSET_n(MDP_CTL_HW_FENCE_IDn_ISR,
+		(HW_FENCE_DPU_OUTPUT_FENCE_START_N + 4));
+	val = MDP_CTL_FENCE_ISR_OP_CODE(0xf, 0x0, 0x0, 0x0);
+	SDE_REG_WRITE(&c, offset, val);
+}
+
+static void _setup_mdp_ops(struct sde_hw_mdp_ops *ops, unsigned long cap, u32 hw_fence_rev)
 {
 	ops->setup_split_pipe = sde_hw_setup_split_pipe;
 	ops->setup_pp_split = sde_hw_setup_pp_split;
@@ -537,6 +906,19 @@ static void _setup_mdp_ops(struct sde_hw_mdp_ops *ops,
 			cap & BIT(SDE_MDP_DHDR_MEMPOOL))
 		ops->set_hdr_plus_metadata = sde_hw_set_hdr_plus_metadata;
 	ops->get_autorefresh_status = sde_hw_get_autorefresh_status;
+
+	if (hw_fence_rev) {
+		if (cap & BIT(SDE_MDP_HW_FENCE_DIR_WRITE))
+			ops->setup_hw_fences = sde_hw_setup_hw_fences_config_with_dir_write;
+		else
+			ops->setup_hw_fences = sde_hw_setup_hw_fences_config;
+
+		ops->hw_fence_input_timestamp_ctrl = sde_hw_hw_fence_timestamp_ctrl;
+		ops->hw_fence_input_status = sde_hw_input_hw_fence_status;
+	}
+
+	if (cap & BIT(SDE_MDP_TOP_PPB_SET_SIZE))
+		ops->set_ppb_fifo_size = sde_hw_top_set_ppb_fifo_size;
 }
 
 static const struct sde_mdp_cfg *_top_offset(enum sde_mdp mdp,
@@ -554,7 +936,7 @@ static const struct sde_mdp_cfg *_top_offset(enum sde_mdp mdp,
 			b->base_off = addr;
 			b->blk_off = m->mdp[i].base;
 			b->length = m->mdp[i].len;
-			b->hwversion = m->hwversion;
+			b->hw_rev = m->hw_rev;
 			b->log_mask = SDE_DBG_MASK_TOP;
 			return &m->mdp[i];
 		}
@@ -563,18 +945,12 @@ static const struct sde_mdp_cfg *_top_offset(enum sde_mdp mdp,
 	return ERR_PTR(-EINVAL);
 }
 
-static struct sde_hw_blk_ops sde_hw_ops = {
-	.start = NULL,
-	.stop = NULL,
-};
-
 struct sde_hw_mdp *sde_hw_mdptop_init(enum sde_mdp idx,
 		void __iomem *addr,
 		const struct sde_mdss_cfg *m)
 {
 	struct sde_hw_mdp *mdp;
 	const struct sde_mdp_cfg *cfg;
-	int rc;
 
 	if (!addr || !m)
 		return ERR_PTR(-EINVAL);
@@ -589,18 +965,14 @@ struct sde_hw_mdp *sde_hw_mdptop_init(enum sde_mdp idx,
 		return ERR_PTR(-EINVAL);
 	}
 
+	spin_lock_init(&mdp->slock);
+
 	/*
 	 * Assign ops
 	 */
 	mdp->idx = idx;
 	mdp->caps = cfg;
-	_setup_mdp_ops(&mdp->ops, mdp->caps->features);
-
-	rc = sde_hw_blk_init(&mdp->base, SDE_HW_BLK_TOP, idx, &sde_hw_ops);
-	if (rc) {
-		SDE_ERROR("failed to init hw blk %d\n", rc);
-		goto blk_init_error;
-	}
+	_setup_mdp_ops(&mdp->ops, mdp->caps->features, m->hw_fence_rev);
 
 	sde_dbg_reg_register_dump_range(SDE_DBG_NAME, "mdss_hw", 0,
 			m->mdss_hw_block_size, 0);
@@ -615,6 +987,15 @@ struct sde_hw_mdp *sde_hw_mdptop_init(enum sde_mdp idx,
 
 		sde_dbg_reg_register_dump_range(SDE_DBG_NAME, name, mdp->hw.blk_off + MDP_SSPP_TOP2,
 				mdp->hw.blk_off +  mdp->hw.length, mdp->hw.xin_id);
+
+		/* do not use blk_off, following offsets start from  mdp_phys */
+		if (m->hw_fence_rev) {
+			sde_dbg_reg_register_dump_range(SDE_DBG_NAME, "hw_fence",
+				MDP_CTL_HW_FENCE_CTRL,
+				MDP_CTL_HW_FENCE_ID_OFFSET_m(MDP_CTL_HW_FENCE_IDm_ATTR, 5),
+				mdp->hw.xin_id);
+		}
+
 	} else {
 		sde_dbg_reg_register_dump_range(SDE_DBG_NAME, cfg->name,
 			mdp->hw.blk_off, mdp->hw.blk_off + mdp->hw.length,
@@ -623,17 +1004,10 @@ struct sde_hw_mdp *sde_hw_mdptop_init(enum sde_mdp idx,
 	sde_dbg_set_sde_top_offset(mdp->hw.blk_off);
 
 	return mdp;
-
-blk_init_error:
-	kfree(mdp);
-
-	return ERR_PTR(rc);
 }
 
 void sde_hw_mdp_destroy(struct sde_hw_mdp *mdp)
 {
-	if (mdp)
-		sde_hw_blk_destroy(&mdp->base);
 	kfree(mdp);
 }
 

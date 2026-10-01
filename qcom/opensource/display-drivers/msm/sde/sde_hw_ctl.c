@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
+#define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 #include <linux/delay.h>
 #include "sde_hwio.h"
 #include "sde_hw_ctl.h"
@@ -53,6 +54,23 @@
 #define CTL_INTF_MASTER               0x134
 #define CTL_UIDLE_ACTIVE              0x138
 
+#define CTL_HW_FENCE_CTRL             0x250
+#define CTL_FENCE_READY_SW_OVERRIDE   0x254
+#define CTL_INPUT_FENCE_ID            0x258
+#define CTL_OUTPUT_FENCE_CTRL         0x25C
+#define CTL_OUTPUT_FENCE_ID           0x260
+#define CTL_HW_FENCE_STATUS           0x278
+#define CTL_OUTPUT_FENCE_SW_OVERRIDE  0x27C
+#define CTL_TIMESTAMP_CTRL            0x264
+#define CTL_OUTPUT_FENCE_START_TIMESTAMP0 0x268
+#define CTL_OUTPUT_FENCE_START_TIMESTAMP1 0x26C
+#define CTL_OUTPUT_FENCE_END_TIMESTAMP0 0x270
+#define CTL_OUTPUT_FENCE_END_TIMESTAMP1 0x274
+#define CTL_OUTPUT_FENCE_DIR_ADDR       0x280
+#define CTL_OUTPUT_FENCE_DIR_DATA       0x284
+#define CTL_OUTPUT_FENCE_DIR_MASK       0x288
+#define CTL_OUTPUT_FENCE_DIR_ATTR       0x28C
+
 #define CTL_MIXER_BORDER_OUT            BIT(24)
 #define CTL_FLUSH_MASK_ROT              BIT(27)
 #define CTL_FLUSH_MASK_CTL              BIT(17)
@@ -72,11 +90,12 @@
 
 #define UPDATE_ACTIVE(r, idx, en)  UPDATE_MASK((r), (idx), (en))
 
+#define DNSC_BLUR_IDX(i) (i + 16)
+
 /**
  * List of SSPP bits in CTL_FLUSH
  */
-static const u32 sspp_tbl[SSPP_MAX] = { SDE_NONE, 0, 1, 2, 18, 3, 4, 5,
-	19, 11, 12, 24, 25, 13, 14, SDE_NONE, SDE_NONE};
+static const u32 sspp_tbl[SSPP_MAX] = { SDE_NONE, 0, 1, 2, 18, 11, 12, 24, 25, 13, 14};
 
 /**
  * List of layer mixer bits in CTL_FLUSH
@@ -124,14 +143,12 @@ static const u32 intf_tbl[INTF_MAX] = {SDE_NONE, 31, 30, 29, 28};
 /**
  * List of SSPP bits in CTL_FETCH_PIPE_ACTIVE
  */
-static const u32 fetch_tbl[SSPP_MAX] = {CTL_INVALID_BIT, 16, 17, 18, 19,
-	CTL_INVALID_BIT, CTL_INVALID_BIT, CTL_INVALID_BIT, CTL_INVALID_BIT, 0,
-	1, 2, 3, 4, 5, CTL_INVALID_BIT, CTL_INVALID_BIT};
+static const u32 fetch_tbl[SSPP_MAX] = {CTL_INVALID_BIT, 16, 17, 18, 19, 0, 1, 2, 3, 4, 5};
 
 /**
  * list of WB bits in CTL_WB_FLUSH
  */
-static const u32 wb_flush_tbl[WB_MAX] = {SDE_NONE, SDE_NONE, SDE_NONE, 2};
+static const u32 wb_flush_tbl[WB_MAX] = {SDE_NONE, SDE_NONE, 1, 2};
 
 /**
  * list of INTF bits in CTL_INTF_FLUSH
@@ -167,7 +184,7 @@ static const u32 cwb_flush_tbl[CWB_MAX] = {SDE_NONE, SDE_NONE, 1, 2, 3,
 /**
  * list of CWB bits in CTL_CWB_FLUSH for dedicated cwb
  */
-static const u32 dcwb_flush_tbl[CWB_MAX] = {SDE_NONE, SDE_NONE, 0, 1};
+static const u32 dcwb_flush_tbl[CWB_MAX] = {SDE_NONE, SDE_NONE, 0, 1, 2, 3};
 
 /**
  * list of DSPP sub-blk flush bits in CTL_DSPP_x_FLUSH
@@ -213,18 +230,12 @@ sspp_reg_cfg_tbl[SSPP_MAX][CTL_SSPP_MAX_RECTS] = {
 	/* SSPP_VIG1 */{ {0, 3, 3, BIT(2)}, {3, 4, 4, 0} },
 	/* SSPP_VIG2 */{ {0, 6, 3, BIT(4)}, {3, 8, 4, 0} },
 	/* SSPP_VIG3 */{ {0, 26, 3, BIT(6)}, {3, 12, 4, 0} },
-	/* SSPP_RGB0 */{ {0, 9, 3, BIT(8)}, {0, 0, 0, 0} },
-	/* SSPP_RGB1 */{ {0, 12, 3, BIT(10)}, {0, 0, 0, 0} },
-	/* SSPP_RGB2 */{ {0, 15, 3, BIT(12)}, {0, 0, 0, 0} },
-	/* SSPP_RGB3 */{ {0, 29, 3, BIT(14)}, {0, 0, 0, 0} },
 	/* SSPP_DMA0 */{ {0, 18, 3, BIT(16)}, {2, 8, 4, 0} },
 	/* SSPP_DMA1 */{ {0, 21, 3, BIT(18)}, {2, 12, 4, 0} },
 	/* SSPP_DMA2 */{ {2, 0, 4, 0}, {2, 16, 4, 0} },
 	/* SSPP_DMA3 */{ {2, 4, 4, 0}, {2, 20, 4, 0} },
 	/* SSPP_DMA4 */{ {4, 0, 4, 0}, {4, 8, 4, 0} },
 	/* SSPP_DMA5 */{ {4, 4, 4, 0}, {4, 12, 4, 0} },
-	/* SSPP_CURSOR0 */{ {1, 20, 4, 0}, {0, 0, 0, 0} },
-	/* SSPP_CURSOR1 */{ {1, 26, 4, 0}, {0, 0, 0, 0} }
 };
 
 /**
@@ -288,7 +299,7 @@ static struct sde_ctl_cfg *_ctl_offset(enum sde_ctl ctl,
 			b->base_off = addr;
 			b->blk_off = m->ctl[i].base;
 			b->length = m->ctl[i].len;
-			b->hwversion = m->hwversion;
+			b->hw_rev = m->hw_rev;
 			b->log_mask = SDE_DBG_MASK_CTL;
 			return &m->ctl[i];
 		}
@@ -322,6 +333,121 @@ static inline bool _is_dspp_flush_pending(struct sde_hw_ctl *ctx)
 	}
 
 	return false;
+}
+
+static inline void sde_hw_ctl_update_input_fence(struct sde_hw_ctl *ctx,
+					u32 client_id, u32 signal_id)
+{
+	u32 val = (client_id << 16) | (0xFFFF & signal_id);
+
+	SDE_REG_WRITE(&ctx->hw, CTL_INPUT_FENCE_ID, val);
+}
+
+static inline void sde_hw_ctl_update_output_fence(struct sde_hw_ctl *ctx,
+					u32 client_id, u32 signal_id)
+{
+	u32 val = (client_id << 16) | (0xFFFF & signal_id);
+
+	SDE_REG_WRITE(&ctx->hw, CTL_OUTPUT_FENCE_ID, val);
+}
+
+static inline int sde_hw_ctl_get_hw_fence_status(struct sde_hw_ctl *ctx)
+{
+	return SDE_REG_READ(&ctx->hw, CTL_HW_FENCE_STATUS);
+}
+
+static inline void sde_hw_ctl_trigger_output_fence(struct sde_hw_ctl *ctx, u32 trigger_sel)
+{
+	u32 val = ((trigger_sel & 0xF) << 4) | 0x1;
+
+	SDE_REG_WRITE(&ctx->hw, CTL_OUTPUT_FENCE_CTRL, val);
+}
+
+static inline void sde_hw_ctl_output_fence_dir_wr_init(struct sde_hw_ctl *ctx, u32 *addr,
+	u32 size, u32 mask)
+{
+	uintptr_t ptr_val = (uintptr_t)addr;
+	u32 attr = SDE_REG_READ(&ctx->hw, CTL_OUTPUT_FENCE_DIR_ATTR);
+
+	attr &= ~(0x7 << 4);
+	attr |= ((size & 0x7) << 4);
+
+	SDE_REG_WRITE(&ctx->hw, CTL_OUTPUT_FENCE_DIR_ATTR, attr);
+	SDE_REG_WRITE(&ctx->hw, CTL_OUTPUT_FENCE_DIR_MASK, mask);
+	SDE_REG_WRITE(&ctx->hw, CTL_OUTPUT_FENCE_DIR_ADDR, ptr_val);
+}
+
+static inline void sde_hw_ctl_output_fence_dir_wr_data(struct sde_hw_ctl *ctx, u32 data)
+{
+	SDE_REG_WRITE(&ctx->hw, CTL_OUTPUT_FENCE_DIR_DATA, data);
+}
+
+static inline void sde_hw_ctl_hw_fence_ctrl(struct sde_hw_ctl *ctx, bool sw_override_set,
+	bool  sw_override_clear, u32 mode)
+{
+	u32 val;
+
+	val = SDE_REG_READ(&ctx->hw, CTL_HW_FENCE_CTRL);
+	val |= (sw_override_set ? BIT(5) : 0) | (sw_override_clear ? BIT(4) : 0);
+	if (!mode)
+		val &= ~BIT(0);
+	else
+		val |= BIT(0);
+
+	SDE_REG_WRITE(&ctx->hw, CTL_HW_FENCE_CTRL, val);
+}
+
+static inline void sde_hw_ctl_trigger_sw_override(struct sde_hw_ctl *ctx)
+{
+	/* clear input fence before override */
+	sde_hw_ctl_update_input_fence(ctx, 0, 0);
+
+	SDE_REG_WRITE(&ctx->hw, CTL_FENCE_READY_SW_OVERRIDE, 0x1);
+}
+
+static inline void sde_hw_ctl_trigger_output_fence_override(struct sde_hw_ctl *ctx)
+{
+	SDE_REG_WRITE(&ctx->hw, CTL_OUTPUT_FENCE_SW_OVERRIDE, 0x1);
+}
+
+static inline void sde_hw_ctl_fence_timestamp_ctrl(struct sde_hw_ctl *ctx, bool enable, bool clear)
+{
+	u32 val;
+
+	val = SDE_REG_READ(&ctx->hw, CTL_TIMESTAMP_CTRL);
+	if (enable)
+		val |= BIT(0);
+	else
+		val &= ~BIT(0);
+	if (clear)
+		val |= BIT(1);
+	else
+		val &= ~BIT(1);
+
+	SDE_REG_WRITE(&ctx->hw, CTL_TIMESTAMP_CTRL, val);
+	wmb(); /* make sure the ctrl is written */
+}
+
+static inline int sde_hw_ctl_output_fence_timestamps(struct sde_hw_ctl *ctx,
+			u64 *val_start, u64 *val_end)
+{
+	u32 start_l, start_h, end_l, end_h;
+
+	if (!ctx || IS_ERR_OR_NULL(val_start) || IS_ERR_OR_NULL(val_end))
+		return -EINVAL;
+
+	start_l = SDE_REG_READ(&ctx->hw, CTL_OUTPUT_FENCE_START_TIMESTAMP0);
+	start_h = SDE_REG_READ(&ctx->hw, CTL_OUTPUT_FENCE_START_TIMESTAMP1);
+	*val_start = (u64)start_h << 32 | start_l;
+
+	end_l = SDE_REG_READ(&ctx->hw, CTL_OUTPUT_FENCE_END_TIMESTAMP0);
+	end_h = SDE_REG_READ(&ctx->hw, CTL_OUTPUT_FENCE_END_TIMESTAMP1);
+	*val_end = (u64)end_h << 32 | end_l;
+
+	/* clear timestamps */
+	sde_hw_ctl_fence_timestamp_ctrl(ctx, false, true);
+
+	return 0;
 }
 
 static inline int sde_hw_ctl_trigger_start(struct sde_hw_ctl *ctx)
@@ -582,6 +708,17 @@ static inline int sde_hw_ctl_update_bitmask_v1(struct sde_hw_ctl *ctx,
 		UPDATE_MASK(ctx->flush.pending_flush_mask, cfg->flush_idx, 0);
 
 	return 0;
+}
+
+static inline void sde_hw_ctl_update_dnsc_blur_bitmask(struct sde_hw_ctl *ctx,
+		u32 blk_idx, bool enable)
+{
+	if (enable)
+		ctx->flush.pending_hw_flush_mask[SDE_HW_FLUSH_WB] |=
+					BIT(DNSC_BLUR_IDX(blk_idx) - DNSC_BLUR_0);
+	else
+		ctx->flush.pending_hw_flush_mask[SDE_HW_FLUSH_WB] &=
+					~BIT(DNSC_BLUR_IDX(blk_idx) - DNSC_BLUR_0);
 }
 
 static inline int sde_hw_ctl_update_pending_flush_v1(
@@ -854,8 +991,7 @@ static void sde_hw_ctl_clear_all_blendstages(struct sde_hw_ctl *ctx)
 		SDE_REG_WRITE(c, CTL_LAYER_EXT(mixer_id), 0);
 		SDE_REG_WRITE(c, CTL_LAYER_EXT2(mixer_id), 0);
 		SDE_REG_WRITE(c, CTL_LAYER_EXT3(mixer_id), 0);
-		if (ctx->caps->features & BIT(SDE_CTL_DMA4_DMA5))
-			SDE_REG_WRITE(c, CTL_LAYER_EXT4(mixer_id), 0);
+		SDE_REG_WRITE(c, CTL_LAYER_EXT4(mixer_id), 0);
 	}
 	SDE_REG_WRITE(c, CTL_FETCH_PIPE_ACTIVE, 0);
 }
@@ -926,8 +1062,7 @@ static void sde_hw_ctl_setup_blendstage(struct sde_hw_ctl *ctx,
 	SDE_REG_WRITE(c, CTL_LAYER_EXT(lm), cfg[1]);
 	SDE_REG_WRITE(c, CTL_LAYER_EXT2(lm), cfg[2]);
 	SDE_REG_WRITE(c, CTL_LAYER_EXT3(lm), cfg[3]);
-	if (ctx->caps->features & BIT(SDE_CTL_DMA4_DMA5))
-		SDE_REG_WRITE(c, CTL_LAYER_EXT4(lm), cfg[4]);
+	SDE_REG_WRITE(c, CTL_LAYER_EXT4(lm), cfg[4]);
 }
 
 static u32 sde_hw_ctl_get_staged_sspp(struct sde_hw_ctl *ctx, enum sde_lm lm,
@@ -937,7 +1072,7 @@ static u32 sde_hw_ctl_get_staged_sspp(struct sde_hw_ctl *ctx, enum sde_lm lm,
 	u32 count = 0;
 	u32 mask = 0;
 	bool staged;
-	u32 mixercfg[CTL_NUM_EXT] = { 0 };
+	u32 mixercfg[CTL_NUM_EXT];
 	struct sde_hw_blk_reg_map *c;
 	const struct ctl_sspp_stage_reg_map *sspp_cfg;
 
@@ -949,8 +1084,7 @@ static u32 sde_hw_ctl_get_staged_sspp(struct sde_hw_ctl *ctx, enum sde_lm lm,
 	mixercfg[1] = SDE_REG_READ(c, CTL_LAYER_EXT(lm));
 	mixercfg[2] = SDE_REG_READ(c, CTL_LAYER_EXT2(lm));
 	mixercfg[3] = SDE_REG_READ(c, CTL_LAYER_EXT3(lm));
-	if (ctx->caps->features & BIT(SDE_CTL_DMA4_DMA5))
-		mixercfg[4] = SDE_REG_READ(c, CTL_LAYER_EXT4(lm));
+	mixercfg[4] = SDE_REG_READ(c, CTL_LAYER_EXT4(lm));
 
 	if (mixercfg[0] & CTL_MIXER_BORDER_OUT)
 		info->bordercolor = true;
@@ -1004,10 +1138,17 @@ static int sde_hw_ctl_intf_cfg_v1(struct sde_hw_ctl *ctx,
 
 	if (cfg->intf_count > 1)
 		intf_master = BIT(cfg->intf_master - INTF_0);
+	else if (cfg->intf_count == 1)
+		intf_master = BIT(cfg->intf[0] - INTF_0);
 
 	for (i = 0; i < cfg->wb_count; i++) {
 		if (cfg->wb[i])
 			wb_active |= BIT(cfg->wb[i] - WB_0);
+	}
+
+	for (i = 0; i < cfg->dnsc_blur_count; i++) {
+		if (cfg->dnsc_blur[i])
+			wb_active |= BIT(DNSC_BLUR_IDX(cfg->dnsc_blur[i] - DNSC_BLUR_0));
 	}
 
 	for (i = 0; i < cfg->merge_3d_count; i++) {
@@ -1066,6 +1207,13 @@ static int sde_hw_ctl_reset_post_disable(struct sde_hw_ctl *ctx,
 		}
 	}
 
+	for (i = 0; i < cfg->dnsc_blur_count; i++) {
+		if (cfg->dnsc_blur[i]) {
+			wb_active &= ~BIT(DNSC_BLUR_IDX(cfg->dnsc_blur[i] - DNSC_BLUR_0));
+			wb_flush |= BIT(DNSC_BLUR_IDX(cfg->dnsc_blur[i] - DNSC_BLUR_0));
+		}
+	}
+
 	if (merge_3d_idx) {
 		/* disable and flush merge3d_blk */
 		merge_3d_active &= ~BIT(merge_3d_idx - MERGE_3D_0);
@@ -1118,8 +1266,23 @@ static int sde_hw_ctl_update_intf_cfg(struct sde_hw_ctl *ctx,
 					enable);
 		}
 
-		wb_active = enable ? BIT(2) : 0;
+		for (i = 0; i < cfg->wb_count; i++) {
+			if (cfg->wb[i] && enable)
+				wb_active |= BIT(cfg->wb[i] - WB_0);
+		}
+
 		SDE_REG_WRITE(c, CTL_CWB_ACTIVE, cwb_active);
+		SDE_REG_WRITE(c, CTL_WB_ACTIVE, wb_active);
+	}
+
+	if (cfg->dnsc_blur_count) {
+		wb_active = SDE_REG_READ(c, CTL_WB_ACTIVE);
+		for (i = 0; i < cfg->dnsc_blur_count; i++) {
+			if (cfg->dnsc_blur[i])
+				UPDATE_ACTIVE(wb_active,
+					DNSC_BLUR_IDX(cfg->dnsc_blur[i] - DNSC_BLUR_0),
+					enable);
+		}
 		SDE_REG_WRITE(c, CTL_WB_ACTIVE, wb_active);
 	}
 
@@ -1293,6 +1456,7 @@ static void _setup_ctl_ops(struct sde_hw_ctl_ops *ops,
 		ops->update_intf_cfg = sde_hw_ctl_update_intf_cfg;
 
 		ops->update_bitmask = sde_hw_ctl_update_bitmask_v1;
+		ops->update_dnsc_blur_bitmask = sde_hw_ctl_update_dnsc_blur_bitmask;
 		ops->get_ctl_intf = sde_hw_ctl_get_intf_v1;
 
 		ops->reset_post_disable = sde_hw_ctl_reset_post_disable;
@@ -1337,22 +1501,34 @@ static void _setup_ctl_ops(struct sde_hw_ctl_ops *ops,
 				sde_hw_ctl_update_bitmask_dspp_pavlut;
 	}
 
+	if (cap & BIT(SDE_CTL_HW_FENCE)) {
+		ops->hw_fence_update_input_fence = sde_hw_ctl_update_input_fence;
+		ops->hw_fence_update_output_fence = sde_hw_ctl_update_output_fence;
+		ops->hw_fence_trigger_output_fence = sde_hw_ctl_trigger_output_fence;
+		ops->hw_fence_ctrl = sde_hw_ctl_hw_fence_ctrl;
+		ops->hw_fence_trigger_sw_override = sde_hw_ctl_trigger_sw_override;
+		ops->get_hw_fence_status = sde_hw_ctl_get_hw_fence_status;
+		ops->trigger_output_fence_override = sde_hw_ctl_trigger_output_fence_override;
+		ops->hw_fence_output_status = sde_hw_ctl_output_fence_timestamps;
+		ops->hw_fence_output_timestamp_ctrl = sde_hw_ctl_fence_timestamp_ctrl;
+		if (cap & BIT(SDE_CTL_HW_FENCE_DIR_WRITE)) {
+			ops->hw_fence_output_fence_dir_write_init =
+				sde_hw_ctl_output_fence_dir_wr_init;
+			ops->hw_fence_output_fence_dir_write_data =
+				sde_hw_ctl_output_fence_dir_wr_data;
+		}
+	}
+
 	if (cap & BIT(SDE_CTL_UIDLE))
 		ops->uidle_enable = sde_hw_ctl_uidle_enable;
-};
+}
 
-static struct sde_hw_blk_ops sde_hw_ops = {
-	.start = NULL,
-	.stop = NULL,
-};
-
-struct sde_hw_ctl *sde_hw_ctl_init(enum sde_ctl idx,
+struct sde_hw_blk_reg_map *sde_hw_ctl_init(enum sde_ctl idx,
 		void __iomem *addr,
 		struct sde_mdss_cfg *m)
 {
 	struct sde_hw_ctl *c;
 	struct sde_ctl_cfg *cfg;
-	int rc;
 
 	c = kzalloc(sizeof(*c), GFP_KERNEL);
 	if (!c)
@@ -1371,26 +1547,14 @@ struct sde_hw_ctl *sde_hw_ctl_init(enum sde_ctl idx,
 	c->mixer_count = m->mixer_count;
 	c->mixer_hw_caps = m->mixer;
 
-	rc = sde_hw_blk_init(&c->base, SDE_HW_BLK_CTL, idx, &sde_hw_ops);
-	if (rc) {
-		SDE_ERROR("failed to init hw blk %d\n", rc);
-		goto blk_init_error;
-	}
-
 	sde_dbg_reg_register_dump_range(SDE_DBG_NAME, cfg->name, c->hw.blk_off,
 			c->hw.blk_off + c->hw.length, c->hw.xin_id);
 
-	return c;
-
-blk_init_error:
-	kfree(c);
-
-	return ERR_PTR(rc);
+	return &c->hw;
 }
 
-void sde_hw_ctl_destroy(struct sde_hw_ctl *ctx)
+void sde_hw_ctl_destroy(struct sde_hw_blk_reg_map *hw)
 {
-	if (ctx)
-		sde_hw_blk_destroy(&ctx->base);
-	kfree(ctx);
+	if (hw)
+		kfree(to_sde_hw_ctl(hw));
 }

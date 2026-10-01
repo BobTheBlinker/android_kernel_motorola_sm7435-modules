@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -10,7 +10,6 @@
 #include "sde_hw_catalog.h"
 #include "sde_hw_mdss.h"
 #include "sde_hw_util.h"
-#include "sde_hw_blk.h"
 #include <drm/msm_drm_pp.h>
 
 struct sde_hw_pingpong;
@@ -132,6 +131,11 @@ struct sde_hw_pingpong_ops {
 	 * get PP features supported by this instance
 	 */
 	unsigned long (*get_hw_caps)(struct sde_hw_pingpong *pp);
+
+	/**
+	 * set_ppb_fifo_size - set ppb latency buffer size to a fixed value
+	 */
+	void (*set_ppb_fifo_size)(struct sde_hw_pingpong *pp, u32 pixels);
 };
 
 struct sde_hw_merge_3d_ops {
@@ -148,7 +152,6 @@ struct sde_hw_merge_3d_ops {
 };
 
 struct sde_hw_merge_3d {
-	struct sde_hw_blk base;
 	struct sde_hw_blk_reg_map hw;
 
 	/* merge_3d */
@@ -160,7 +163,6 @@ struct sde_hw_merge_3d {
 };
 
 struct sde_hw_pingpong {
-	struct sde_hw_blk base;
 	struct sde_hw_blk_reg_map hw;
 
 	/* pingpong */
@@ -178,13 +180,13 @@ struct sde_hw_pingpong {
 };
 
 /**
- * sde_hw_pingpong - convert base object sde_hw_base to container
- * @hw: Pointer to base hardware block
+ * to_sde_hw_pingpong - convert base hw object to sde_hw_pingpong container
+ * @hw: Pointer to hardware block register map object
  * return: Pointer to hardware block container
  */
-static inline struct sde_hw_pingpong *to_sde_hw_pingpong(struct sde_hw_blk *hw)
+static inline struct sde_hw_pingpong *to_sde_hw_pingpong(struct sde_hw_blk_reg_map *hw)
 {
-	return container_of(hw, struct sde_hw_pingpong, base);
+	return container_of(hw, struct sde_hw_pingpong, hw);
 }
 
 /**
@@ -195,15 +197,15 @@ static inline struct sde_hw_pingpong *to_sde_hw_pingpong(struct sde_hw_blk *hw)
  * @m:    Pointer to mdss catalog data
  * Returns: Error code or allocated sde_hw_pingpong context
  */
-struct sde_hw_pingpong *sde_hw_pingpong_init(enum sde_pingpong idx,
+struct sde_hw_blk_reg_map *sde_hw_pingpong_init(enum sde_pingpong idx,
 		void __iomem *addr,
 		struct sde_mdss_cfg *m);
 
 /**
  * sde_hw_pingpong_destroy - destroys pingpong driver context
  *	should be called to free the context
- * @pp:   Pointer to PP driver context returned by sde_hw_pingpong_init
+ * @hw: Pointer to hardware block register map object
  */
-void sde_hw_pingpong_destroy(struct sde_hw_pingpong *pp);
+void sde_hw_pingpong_destroy(struct sde_hw_blk_reg_map *hw);
 
 #endif /*_SDE_HW_PINGPONG_H */

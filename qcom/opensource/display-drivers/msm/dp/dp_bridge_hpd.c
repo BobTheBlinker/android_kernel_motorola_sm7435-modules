@@ -1,6 +1,5 @@
 /*
  * Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -21,7 +20,6 @@
 #include <linux/slab.h>
 #include <linux/device.h>
 #include "dp_bridge_hpd.h"
-#include "dp_debug.h"
 
 struct dp_bridge_hpd_private {
 	struct device *dev;
@@ -40,7 +38,7 @@ static int dp_bridge_hpd_connect(struct dp_bridge_hpd_private *bridge_hpd,
 	int rc = 0;
 
 	if (!bridge_hpd) {
-		DP_ERR("invalid input\n");
+		pr_err("invalid input\n");
 		rc = -EINVAL;
 		goto error;
 	}
@@ -52,7 +50,7 @@ static int dp_bridge_hpd_connect(struct dp_bridge_hpd_private *bridge_hpd,
 	if (!bridge_hpd->cb ||
 		!bridge_hpd->cb->configure ||
 		!bridge_hpd->cb->disconnect) {
-		DP_ERR("invalid cb\n");
+		pr_err("invalid cb\n");
 		rc = -EINVAL;
 		goto error;
 	}
@@ -71,7 +69,7 @@ static int dp_bridge_hpd_attention(struct dp_bridge_hpd_private *bridge_hpd)
 	int rc = 0;
 
 	if (!bridge_hpd) {
-		DP_ERR("invalid input\n");
+		pr_err("invalid input\n");
 		rc = -EINVAL;
 		goto error;
 	}
@@ -107,7 +105,7 @@ static int dp_bridge_hpd_simulate_connect(struct dp_hpd *dp_hpd, bool hpd)
 	struct dp_bridge_hpd_private *bridge_hpd;
 
 	if (!dp_hpd) {
-		DP_ERR("invalid input\n");
+		pr_err("invalid input\n");
 		rc = -EINVAL;
 		goto error;
 	}
@@ -125,7 +123,7 @@ static int dp_bridge_hpd_simulate_attention(struct dp_hpd *dp_hpd, int vdo)
 	struct dp_bridge_hpd_private *bridge_hpd;
 
 	if (!dp_hpd) {
-		DP_ERR("invalid input\n");
+		pr_err("invalid input\n");
 		rc = -EINVAL;
 		goto error;
 	}
@@ -172,7 +170,7 @@ struct dp_hpd *dp_bridge_hpd_get(struct device *dev,
 	struct dp_bridge_hpd_private *bridge_hpd;
 
 	if (!dev || !cb) {
-		DP_ERR("invalid device\n");
+		pr_err("invalid device\n");
 		rc = -EINVAL;
 		goto error;
 	}

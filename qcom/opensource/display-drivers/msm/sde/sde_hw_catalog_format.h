@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2019, 2021 The Linux Foundation. All rights reserved.
  */
 
@@ -63,22 +63,16 @@
 
 static const struct sde_format_extended plane_formats[] = {
 	RGB_FMTS,
-	{DRM_FORMAT_C8, DRM_FORMAT_MOD_QCOM_FSC_TILE},
-	{DRM_FORMAT_C8, DRM_FORMAT_MOD_QCOM_FSC_TILE | DRM_FORMAT_MOD_QCOM_COMPRESSED},
 	RGB_10BIT_FMTS,
 	{0, 0},
 };
 
 static const struct sde_format_extended plane_formats_vig[] = {
 	RGB_FMTS,
-	{DRM_FORMAT_C8, DRM_FORMAT_MOD_QCOM_FSC_TILE},
-	{DRM_FORMAT_C8, DRM_FORMAT_MOD_QCOM_FSC_TILE | DRM_FORMAT_MOD_QCOM_COMPRESSED},
 
 	{DRM_FORMAT_NV12, 0},
 	{DRM_FORMAT_NV12, DRM_FORMAT_MOD_QCOM_COMPRESSED},
 	{DRM_FORMAT_NV21, 0},
-	{DRM_FORMAT_NV16, 0},
-	{DRM_FORMAT_NV61, 0},
 	{DRM_FORMAT_VYUY, 0},
 	{DRM_FORMAT_UYVY, 0},
 	{DRM_FORMAT_YUYV, 0},
@@ -93,23 +87,6 @@ static const struct sde_format_extended plane_formats_vig[] = {
 	{0, 0},
 };
 
-static const struct sde_format_extended cursor_formats[] = {
-	{DRM_FORMAT_ARGB8888, 0},
-	{DRM_FORMAT_ABGR8888, 0},
-	{DRM_FORMAT_RGBA8888, 0},
-	{DRM_FORMAT_BGRA8888, 0},
-	{DRM_FORMAT_XRGB8888, 0},
-	{DRM_FORMAT_ARGB1555, 0},
-	{DRM_FORMAT_ABGR1555, 0},
-	{DRM_FORMAT_RGBA5551, 0},
-	{DRM_FORMAT_BGRA5551, 0},
-	{DRM_FORMAT_ARGB4444, 0},
-	{DRM_FORMAT_ABGR4444, 0},
-	{DRM_FORMAT_RGBA4444, 0},
-	{DRM_FORMAT_BGRA4444, 0},
-	{0, 0},
-};
-
 static const struct sde_format_extended wb2_formats[] = {
 	{DRM_FORMAT_RGB565, 0},
 	{DRM_FORMAT_BGR565, DRM_FORMAT_MOD_QCOM_COMPRESSED},
@@ -117,6 +94,10 @@ static const struct sde_format_extended wb2_formats[] = {
 	{DRM_FORMAT_ARGB8888, 0},
 	{DRM_FORMAT_RGBA8888, 0},
 	{DRM_FORMAT_ABGR8888, DRM_FORMAT_MOD_QCOM_COMPRESSED},
+	{DRM_FORMAT_ABGR8888, DRM_FORMAT_MOD_QCOM_TILE},
+	{DRM_FORMAT_XBGR8888, DRM_FORMAT_MOD_QCOM_TILE},
+	{DRM_FORMAT_ABGR2101010, DRM_FORMAT_MOD_QCOM_TILE},
+	{DRM_FORMAT_XBGR2101010, DRM_FORMAT_MOD_QCOM_TILE},
 	{DRM_FORMAT_XRGB8888, 0},
 	{DRM_FORMAT_RGBX8888, 0},
 	{DRM_FORMAT_XBGR8888, DRM_FORMAT_MOD_QCOM_COMPRESSED},
@@ -151,6 +132,14 @@ static const struct sde_format_extended wb2_formats[] = {
 	RGB_10BIT_FMTS,
 	TP10_UBWC_FMTS,
 
+	{0, 0},
+};
+
+static const struct sde_format_extended wb_rot_formats[] = {
+	{DRM_FORMAT_ABGR8888, DRM_FORMAT_MOD_QCOM_TILE},
+	{DRM_FORMAT_XBGR8888, DRM_FORMAT_MOD_QCOM_TILE},
+	{DRM_FORMAT_ABGR2101010, DRM_FORMAT_MOD_QCOM_TILE},
+	{DRM_FORMAT_XBGR2101010, DRM_FORMAT_MOD_QCOM_TILE},
 	{0, 0},
 };
 
@@ -198,5 +187,10 @@ static const struct sde_format_extended true_inline_rot_v201_restricted_fmts[] =
 	P010_UBWC_FMTS,
 	{DRM_FORMAT_ABGR16161616F, DRM_FORMAT_MOD_QCOM_COMPRESSED},
 	{0, 0},
+};
+
+static const struct sde_dnsc_blur_filter_info dnsc_blur_v100_filters[] = {
+	{DNSC_BLUR_GAUS_FILTER, 16, 8192, 1, 8192, 8, 64, 0, 7, {8, 12, 16, 24, 32, 48, 64}},
+	{DNSC_BLUR_PCMN_FILTER, 16, 8192, 1, 8192, 1, 128, 1, 0, {0}},
 };
 

@@ -196,7 +196,7 @@ struct cam_ife_hw_mgr_ctx_scratch_buf_info {
  * @sys_cache_usage:     Per context sys cache usage
  *                       The corresponding index will be set
  *                       for the cache type
- * @skip_reg_dump_buf_put: Set if put_cpu_buf for reg dump buf is already called
+ * @skip_reg_dump_buf_put:    Set if put_cpu_buf for reg dump buf is already called
  *
  */
 struct cam_ife_hw_mgr_ctx_flags {
@@ -330,9 +330,9 @@ struct cam_ife_hw_mgr_ctx {
 	uint32_t                                   hw_version;
 	struct cam_cmd_buf_desc                    reg_dump_buf_desc[
 						CAM_REG_DUMP_MAX_BUF_ENTRIES];
-	uint32_t                                   num_reg_dump_buf;
 	struct cam_cmd_buf_desc_addr_len           reg_dump_cmd_buf_addr_len[
 						CAM_REG_DUMP_MAX_BUF_ENTRIES];
+	uint32_t                                   num_reg_dump_buf;
 	uint64_t                                   applied_req_id;
 	enum cam_ife_ctx_master_type               ctx_type;
 	uint32_t                                   ctx_config;

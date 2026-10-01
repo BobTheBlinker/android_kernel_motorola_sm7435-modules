@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
- *
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/debugfs.h>
@@ -10,7 +8,7 @@
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/ipa.h>
+#include "ipa.h"
 #include <linux/msm_gsi.h>
 #include <linux/ipa_mhi.h>
 #include "gsi.h"
@@ -18,7 +16,6 @@
 #include "ipa_pm.h"
 #include "ipa_i.h"
 #include "ipahal.h"
-#include <linux/ipa_fmwk.h>
 
 #define IPA_MHI_DRV_NAME "ipa_mhi_client"
 
@@ -61,8 +58,8 @@
 #define IPA_MHI_SUSPEND_SLEEP_MIN 900
 #define IPA_MHI_SUSPEND_SLEEP_MAX 1100
 
-#define IPA_MHI_MAX_UL_CHANNELS 3  //3 out channels below
-#define IPA_MHI_MAX_DL_CHANNELS 6  //4 in channels + QDSS + COAL
+#define IPA_MHI_MAX_UL_CHANNELS 2
+#define IPA_MHI_MAX_DL_CHANNELS 4
 
 /* bit #40 in address should be asserted for MHI transfers over pcie */
 #define IPA_MHI_CLIENT_HOST_ADDR_COND(addr) \
@@ -72,7 +69,6 @@
 #define IPA_MHI_CLIENT_IP_HW_0_IN 101
 #define IPA_MHI_CLIENT_ADPL_IN 102
 #define IPA_MHI_CLIENT_IP_HW_QDSS 103
-#define IPA_MHI_CLIENT_IP_HW_COAL 104
 #define IPA_MHI_CLIENT_IP_HW_1_OUT 105
 #define IPA_MHI_CLIENT_IP_HW_1_IN 106
 #define IPA_MHI_CLIENT_QMAP_FLOW_CTRL_OUT 109
@@ -657,7 +653,7 @@ static int ipa_mhi_set_state(enum ipa_mhi_state new_state)
  * Return codes: 0	  : success
  *		 negative : error
  */
-static int ipa_mhi_start_internal(struct ipa_mhi_start_params *params)
+int ipa_mhi_start(struct ipa_mhi_start_params *params)
 {
 	int res;
 	struct ipa_mhi_init_engine init_params;
@@ -738,6 +734,7 @@ fail_pm_activate:
 	ipa_mhi_set_state(IPA_MHI_STATE_INITIALIZED);
 	return res;
 }
+EXPORT_SYMBOL(ipa_mhi_start);
 
 /**
  * ipa_mhi_get_channel_context() - Get corresponding channel context
@@ -782,16 +779,7 @@ static struct ipa_mhi_channel_ctx *ipa_mhi_get_channel_context(
 
 	channels[ch_idx].valid = true;
 	channels[ch_idx].id = channel_id;
-#ifdef IPA_CLIENT_MHI_COAL_CONS
-	/* For COAL CONS and default consumer pipe using same event ring
-	 * so not required to increment the event ring count.
-	 */
-	if (client == IPA_CLIENT_MHI_COAL_CONS)
-		channels[ch_idx].index = ipa_mhi_client_ctx->total_channels;
-	else
-#endif
-		channels[ch_idx].index = ipa_mhi_client_ctx->total_channels++;
-
+	channels[ch_idx].index = ipa_mhi_client_ctx->total_channels++;
 	channels[ch_idx].client = client;
 	channels[ch_idx].state = IPA_HW_MHI_CHANNEL_STATE_INVALID;
 
@@ -1092,7 +1080,7 @@ static int ipa_mhi_suspend_gsi_channel(struct ipa_mhi_channel_ctx *channel)
 	if (clnt_hdl < 0)
 		return -EFAULT;
 
-	res = ipa3_stop_gsi_channel(clnt_hdl);
+	res = ipa_stop_gsi_channel(clnt_hdl);
 	if (res != 0 && res != -GSI_STATUS_AGAIN &&
 	    res != -GSI_STATUS_TIMED_OUT) {
 		IPA_MHI_ERR("GSI stop channel failed %d\n", res);
@@ -1231,11 +1219,6 @@ static enum ipa_client_type ipa3_mhi_get_client_by_chid(u32 chid)
 	case IPA_MHI_CLIENT_IP_HW_QDSS:
 		client = IPA_CLIENT_MHI_QDSS_CONS;
 		break;
-#ifdef IPA_CLIENT_MHI_COAL_CONS
-	case IPA_MHI_CLIENT_IP_HW_COAL:
-		client = IPA_CLIENT_MHI_COAL_CONS;
-		break;
-#endif
 	case IPA_MHI_CLIENT_IP_HW_0_OUT:
 		client = IPA_CLIENT_MHI_PROD;
 		break;
@@ -1284,7 +1267,7 @@ static enum ipa_client_type ipa3_mhi_get_client_by_chid(u32 chid)
  * Return codes: 0	  : success
  *		 negative : error
  */
-static int ipa_mhi_connect_pipe_internal(struct ipa_mhi_connect_params *in, u32 *clnt_hdl)
+int ipa_mhi_connect_pipe(struct ipa_mhi_connect_params *in, u32 *clnt_hdl)
 {
 	int res;
 	unsigned long flags;
@@ -1402,16 +1385,6 @@ static int ipa_mhi_connect_pipe_internal(struct ipa_mhi_connect_params *in, u32 
 	else if (in->sys.client == IPA_CLIENT_MHI_LOW_LAT_CONS)
 		ipa3_update_mhi_ctrl_state(IPA_MHI_CTRL_DL_SETUP, true);
 
-#ifdef IPA_CLIENT_MHI_COAL_CONS
-	if (in->sys.client == IPA_CLIENT_MHI_COAL_CONS)
-	{
-		mutex_lock(&ipa3_ctx->lock);
-		ipa3_ctx->is_mhi_coal_set = true;
-		mutex_unlock(&ipa3_ctx->lock);
-		ipa_send_mhi_coal_endp_ind_to_modem(true);
-	}
-#endif
-
 	mutex_unlock(&mhi_client_general_mutex);
 
 	if (!in->sys.keep_ipa_awake)
@@ -1427,6 +1400,7 @@ fail_start_channel:
 	IPA_ACTIVE_CLIENTS_DEC_EP(in->sys.client);
 	return -EPERM;
 }
+EXPORT_SYMBOL(ipa_mhi_connect_pipe);
 
 /**
  * ipa_mhi_disconnect_pipe() - Disconnect pipe from IPA and reset corresponding
@@ -1442,7 +1416,7 @@ fail_start_channel:
  * Return codes: 0	  : success
  *		 negative : error
  */
-static int ipa_mhi_disconnect_pipe_internal(u32 clnt_hdl)
+int ipa_mhi_disconnect_pipe(u32 clnt_hdl)
 {
 	int res;
 	enum ipa_client_type client;
@@ -1472,16 +1446,6 @@ static int ipa_mhi_disconnect_pipe_internal(u32 clnt_hdl)
 		ipa3_update_mhi_ctrl_state(IPA_MHI_CTRL_UL_SETUP, false);
 	else if (client == IPA_CLIENT_MHI_LOW_LAT_CONS)
 		ipa3_update_mhi_ctrl_state(IPA_MHI_CTRL_DL_SETUP, false);
-
-#ifdef IPA_CLIENT_MHI_COAL_CONS
-	if (client == IPA_CLIENT_MHI_COAL_CONS)
-	{
-		mutex_lock(&ipa3_ctx->lock);
-		ipa3_ctx->is_mhi_coal_set = false;
-		mutex_unlock(&ipa3_ctx->lock);
-	}
-#endif
-
 	IPA_ACTIVE_CLIENTS_INC_EP(client);
 
 	res = ipa_mhi_reset_channel(channel, false);
@@ -1511,6 +1475,7 @@ fail_reset_channel:
 	IPA_ACTIVE_CLIENTS_DEC_EP(client);
 	return res;
 }
+EXPORT_SYMBOL(ipa_mhi_disconnect_pipe);
 
 static int ipa_mhi_suspend_channels(struct ipa_mhi_channel_ctx *channels,
 	int max_channels)
@@ -1519,8 +1484,7 @@ static int ipa_mhi_suspend_channels(struct ipa_mhi_channel_ctx *channels,
 	int res;
 
 	IPA_MHI_FUNC_ENTRY();
-	/* have to suspend channel backwards for coalescing channel */
-	for (i = max_channels - 1; i >= 0; i--) {
+	for (i = 0; i < max_channels; i++) {
 		if (!channels[i].valid)
 			continue;
 		if (channels[i].state !=
@@ -1908,7 +1872,7 @@ fail_suspend_dl_channel:
  * Return codes: 0	  : success
  *		 negative : error
  */
-static int ipa_mhi_suspend_internal(bool force)
+int ipa_mhi_suspend(bool force)
 {
 	int res;
 	bool empty;
@@ -1994,6 +1958,7 @@ fail_suspend_dl_channel:
 	ipa_mhi_set_state(IPA_MHI_STATE_STARTED);
 	return res;
 }
+EXPORT_SYMBOL(ipa_mhi_suspend);
 
 /**
  * ipa_mhi_resume() - Resume MHI accelerated channels
@@ -2009,7 +1974,7 @@ fail_suspend_dl_channel:
  * Return codes: 0	  : success
  *		 negative : error
  */
-static int ipa_mhi_resume_internal(void)
+int ipa_mhi_resume(void)
 {
 	int res;
 
@@ -2076,6 +2041,7 @@ fail_pm_activate:
 	ipa_mhi_set_state(IPA_MHI_STATE_SUSPENDED);
 	return res;
 }
+EXPORT_SYMBOL(ipa_mhi_resume);
 
 
 static int  ipa_mhi_destroy_channels(struct ipa_mhi_channel_ctx *channels,
@@ -2085,8 +2051,7 @@ static int  ipa_mhi_destroy_channels(struct ipa_mhi_channel_ctx *channels,
 	int i, res;
 	u32 clnt_hdl;
 
-	/* have to destroy backward for coalescing channels */
-	for (i = num_of_channels - 1; i >= 0; i--) {
+	for (i = 0; i < num_of_channels; i++) {
 		channel = &channels[i];
 		if (!channel->valid)
 			continue;
@@ -2095,7 +2060,7 @@ static int  ipa_mhi_destroy_channels(struct ipa_mhi_channel_ctx *channels,
 		if (channel->state != IPA_HW_MHI_CHANNEL_STATE_DISABLE) {
 			clnt_hdl = ipa_get_ep_mapping(channel->client);
 			IPA_MHI_DBG("disconnect pipe (ep: %d)\n", clnt_hdl);
-			res = ipa_mhi_disconnect_pipe_internal(clnt_hdl);
+			res = ipa_mhi_disconnect_pipe(clnt_hdl);
 			if (res) {
 				IPA_MHI_ERR(
 					"failed to disconnect pipe %d, err %d\n"
@@ -2175,7 +2140,7 @@ static void ipa_mhi_deregister_pm(void)
  * MHI resources.
  * When this function returns ipa_mhi can re-initialize.
  */
-static void ipa_mhi_destroy_internal(void)
+void ipa_mhi_destroy(void)
 {
 	int res;
 
@@ -2209,6 +2174,7 @@ static void ipa_mhi_destroy_internal(void)
 fail:
 	ipa_assert();
 }
+EXPORT_SYMBOL(ipa_mhi_destroy);
 
 static void ipa_mhi_pm_cb(void *p, enum ipa_pm_cb_event event)
 {
@@ -2303,7 +2269,7 @@ fail_pm_cons:
  * Return codes: 0	  : success
  *		 negative : error
  */
-static int ipa_mhi_init_internal(struct ipa_mhi_init_params *params)
+int ipa_mhi_init(struct ipa_mhi_init_params *params)
 {
 	int res;
 
@@ -2397,6 +2363,7 @@ fail_create_wq:
 fail_alloc_ctx:
 	return res;
 }
+EXPORT_SYMBOL(ipa_mhi_init);
 
 /**
  * ipa_mhi_handle_ipa_config_req() - hanle IPA CONFIG QMI message
@@ -2408,12 +2375,13 @@ fail_alloc_ctx:
  * Return codes: 0	  : success
  *		 negative : error
  */
-static int ipa_mhi_handle_ipa_config_req_cb(struct ipa_config_req_msg_v01 *config_req)
+int ipa_mhi_handle_ipa_config_req(struct ipa_config_req_msg_v01 *config_req)
 {
 	IPA_MHI_FUNC_ENTRY();
 	IPA_MHI_FUNC_EXIT();
 	return 0;
 }
+EXPORT_SYMBOL(ipa_mhi_handle_ipa_config_req);
 
 int ipa_mhi_is_using_dma(bool *flag)
 {
@@ -2447,7 +2415,7 @@ int ipa_mhi_is_using_dma(bool *flag)
  * Return codes: 0	  : success
  *		 negative : error
  */
-int ipa_mhi_update_mstate_internal(enum ipa_mhi_mstate mstate_info)
+int ipa_mhi_update_mstate(enum ipa_mhi_mstate mstate_info)
 {
 	IPA_MHI_FUNC_ENTRY();
 
@@ -2464,24 +2432,7 @@ int ipa_mhi_update_mstate_internal(enum ipa_mhi_mstate mstate_info)
 	IPA_MHI_FUNC_EXIT();
 	return 0;
 }
-
-void ipa_mhi_register(void)
-{
-	struct ipa_mhi_data funcs;
-
-	funcs.ipa_mhi_init = ipa_mhi_init_internal;
-	funcs.ipa_mhi_start = ipa_mhi_start_internal;
-	funcs.ipa_mhi_connect_pipe = ipa_mhi_connect_pipe_internal;
-	funcs.ipa_mhi_disconnect_pipe = ipa_mhi_disconnect_pipe_internal;
-	funcs.ipa_mhi_suspend = ipa_mhi_suspend_internal;
-	funcs.ipa_mhi_resume = ipa_mhi_resume_internal;
-	funcs.ipa_mhi_destroy = ipa_mhi_destroy_internal;
-	funcs.ipa_mhi_handle_ipa_config_req = ipa_mhi_handle_ipa_config_req_cb;
-	funcs.ipa_mhi_update_mstate = ipa_mhi_update_mstate_internal;
-	if (ipa_fmwk_register_ipa_mhi(&funcs))
-		pr_err("failed to register ipa_mhi APIs\n");
-}
-EXPORT_SYMBOL(ipa_mhi_register);
+EXPORT_SYMBOL(ipa_mhi_update_mstate);
 
 
 MODULE_LICENSE("GPL v2");

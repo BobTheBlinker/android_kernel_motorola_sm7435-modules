@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -56,6 +56,7 @@ static const enum dsi_ctrl_version dsi_ctrl_v2_4 = DSI_CTRL_VERSION_2_4;
 static const enum dsi_ctrl_version dsi_ctrl_v2_5 = DSI_CTRL_VERSION_2_5;
 static const enum dsi_ctrl_version dsi_ctrl_v2_6 = DSI_CTRL_VERSION_2_6;
 static const enum dsi_ctrl_version dsi_ctrl_v2_7 = DSI_CTRL_VERSION_2_7;
+static const enum dsi_ctrl_version dsi_ctrl_v2_8 = DSI_CTRL_VERSION_2_8;
 
 static const struct of_device_id msm_dsi_of_match[] = {
 	{
@@ -82,10 +83,14 @@ static const struct of_device_id msm_dsi_of_match[] = {
 		.compatible = "qcom,dsi-ctrl-hw-v2.7",
 		.data = &dsi_ctrl_v2_7,
 	},
+	{
+		.compatible = "qcom,dsi-ctrl-hw-v2.8",
+		.data = &dsi_ctrl_v2_8,
+	},
 	{}
 };
 
-#ifdef CONFIG_DEBUG_FS
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 static ssize_t debugfs_state_info_read(struct file *file,
 				       char __user *buff,
 				       size_t count,
@@ -225,10 +230,10 @@ static ssize_t debugfs_line_count_read(struct file *file,
 			dsi_ctrl->cmd_trigger_frame);
 	len += scnprintf((buf + len), max_len - len,
 			"Command successful at line: %04x\n",
-			atomic_read(&dsi_ctrl->cmd_success_line));
+			dsi_ctrl->cmd_success_line);
 	len += scnprintf((buf + len), max_len - len,
 			"Command successful at frame: %04x\n",
-			atomic_read(&dsi_ctrl->cmd_success_frame));
+			dsi_ctrl->cmd_success_frame);
 
 	mutex_unlock(&dsi_ctrl->ctrl_lock);
 
@@ -303,17 +308,7 @@ static int dsi_ctrl_debugfs_init(struct dsi_ctrl *dsi_ctrl,
 		goto error_remove_dir;
 	}
 
-	cmd_dma_logs = debugfs_create_bool("enable_cmd_dma_stats",
-				       0600,
-				       dir,
-				       &dsi_ctrl->enable_cmd_dma_stats);
-	if (IS_ERR_OR_NULL(cmd_dma_logs)) {
-		rc = PTR_ERR(cmd_dma_logs);
-		DSI_CTRL_ERR(dsi_ctrl,
-				"enable cmd dma stats failed, rc=%d\n",
-				rc);
-		goto error_remove_dir;
-	}
+	debugfs_create_bool("enable_cmd_dma_stats", 0600, dir, &dsi_ctrl->enable_cmd_dma_stats);
 
 	cmd_dma_logs = debugfs_create_file("cmd_dma_stats",
 				       0444,
@@ -348,6 +343,13 @@ static int dsi_ctrl_debugfs_deinit(struct dsi_ctrl *dsi_ctrl)
 #else
 static int dsi_ctrl_debugfs_init(struct dsi_ctrl *dsi_ctrl, struct dentry *parent)
 {
+	char dbg_name[DSI_DEBUG_NAME_LEN];
+
+	snprintf(dbg_name, DSI_DEBUG_NAME_LEN, "dsi%d_ctrl",
+						dsi_ctrl->cell_index);
+	sde_dbg_reg_register_base(dbg_name, dsi_ctrl->hw.base,
+			msm_iomap_size(dsi_ctrl->pdev, "dsi_ctrl"),
+			msm_get_phys_addr(dsi_ctrl->pdev, "dsi_ctrl"), SDE_DBG_DSI);
 	return 0;
 }
 static int dsi_ctrl_debugfs_deinit(struct dsi_ctrl *dsi_ctrl)
@@ -417,15 +419,12 @@ static void dsi_ctrl_clear_dma_status(struct dsi_ctrl *dsi_ctrl)
 
 	dsi_hw_ops = dsi_ctrl->hw.ops;
 
-	mutex_lock(&dsi_ctrl->ctrl_lock);
-
 	status = dsi_hw_ops.poll_dma_status(&dsi_ctrl->hw);
 	SDE_EVT32(dsi_ctrl->cell_index, SDE_EVTLOG_FUNC_ENTRY, status);
 
 	status |= (DSI_CMD_MODE_DMA_DONE | DSI_BTA_DONE);
 	dsi_hw_ops.clear_interrupt_status(&dsi_ctrl->hw, status);
 
-	mutex_unlock(&dsi_ctrl->ctrl_lock);
 }
 
 static void dsi_ctrl_post_cmd_transfer(struct dsi_ctrl *dsi_ctrl)
@@ -434,6 +433,8 @@ static void dsi_ctrl_post_cmd_transfer(struct dsi_ctrl *dsi_ctrl)
 	struct dsi_ctrl_hw_ops dsi_hw_ops = dsi_ctrl->hw.ops;
 	struct dsi_clk_ctrl_info clk_info;
 	u32 mask = BIT(DSI_FIFO_OVERFLOW);
+
+	mutex_lock(&dsi_ctrl->ctrl_lock);
 
 	SDE_EVT32(SDE_EVTLOG_FUNC_ENTRY, dsi_ctrl->cell_index, dsi_ctrl->pending_cmd_flags);
 
@@ -445,8 +446,6 @@ static void dsi_ctrl_post_cmd_transfer(struct dsi_ctrl *dsi_ctrl)
 		/* Wait for read command transfer to complete is done in dsi_message_rx. */
 		dsi_ctrl_dma_cmd_wait_for_done(dsi_ctrl);
 	}
-
-	mutex_lock(&dsi_ctrl->ctrl_lock);
 
 	if (dsi_ctrl->hw.reset_trig_ctrl)
 		dsi_hw_ops.reset_trig_ctrl(&dsi_ctrl->hw,
@@ -711,6 +710,7 @@ static int dsi_ctrl_init_regmap(struct platform_device *pdev,
 	case DSI_CTRL_VERSION_2_5:
 	case DSI_CTRL_VERSION_2_6:
 	case DSI_CTRL_VERSION_2_7:
+	case DSI_CTRL_VERSION_2_8:
 		ptr = msm_ioremap(pdev, "disp_cc_base", ctrl->name);
 		if (IS_ERR(ptr)) {
 			DSI_CTRL_ERR(ctrl, "disp_cc base address not found for\n");
@@ -1143,10 +1143,10 @@ static int dsi_ctrl_enable_supplies(struct dsi_ctrl *dsi_ctrl, bool enable)
 	int rc = 0;
 
 	if (enable) {
-		rc = pm_runtime_get_sync(dsi_ctrl->drm_dev->dev);
+		rc = pm_runtime_resume_and_get(dsi_ctrl->drm_dev->dev);
 		if (rc < 0) {
-			DSI_CTRL_ERR(dsi_ctrl,
-				"Power resource enable failed, rc=%d\n", rc);
+			DSI_CTRL_ERR(dsi_ctrl, "failed to enable power resource %d\n", rc);
+			SDE_EVT32(rc, SDE_EVTLOG_ERROR);
 			goto error;
 		}
 
@@ -1589,11 +1589,11 @@ static int dsi_message_tx(struct dsi_ctrl *dsi_ctrl, struct dsi_cmd_desc *cmd_de
 
 		cmdbuf = (u8 *)(dsi_ctrl->vaddr);
 
-		msm_gem_sync(dsi_ctrl->tx_cmd_buf);
 		for (cnt = 0; cnt < length; cnt++)
 			cmdbuf[dsi_ctrl->cmd_len + cnt] = buffer[cnt];
 
 		dsi_ctrl->cmd_len += length;
+		msm_gem_sync(dsi_ctrl->tx_cmd_buf);
 
 		if (*flags & DSI_CTRL_CMD_LAST_COMMAND) {
 			cmd_mem.length = dsi_ctrl->cmd_len;
@@ -2061,14 +2061,14 @@ static int dsi_ctrl_dts_parse(struct dsi_ctrl *dsi_ctrl,
 	if (!dsi_ctrl->name)
 		dsi_ctrl->name = DSI_CTRL_DEFAULT_LABEL;
 
-	dsi_ctrl->phy_isolation_enabled = of_property_read_bool(of_node,
-				    "qcom,dsi-phy-isolation-enabled");
-
 	dsi_ctrl->null_insertion_enabled = of_property_read_bool(of_node,
 					"qcom,null-insertion-enabled");
 
 	dsi_ctrl->split_link_supported = of_property_read_bool(of_node,
 					"qcom,split-link-supported");
+
+	dsi_ctrl->phy_pll_bypass = of_property_read_bool(of_node,
+					"qcom,dsi-phy-pll-bypass");
 
 	rc = of_property_read_u32(of_node, "frame-threshold-time-us",
 			&frame_threshold_time_us);
@@ -2079,6 +2079,8 @@ static int dsi_ctrl_dts_parse(struct dsi_ctrl *dsi_ctrl,
 	}
 
 	dsi_ctrl->frame_threshold_time_us = frame_threshold_time_us;
+
+	dsi_ctrl->dsi_ctrl_shared = of_property_read_bool(of_node, "qcom,dsi-ctrl-shared");
 
 	return 0;
 }
@@ -2142,7 +2144,7 @@ static int dsi_ctrl_dev_probe(struct platform_device *pdev)
 	}
 
 	rc = dsi_catalog_ctrl_setup(&dsi_ctrl->hw, dsi_ctrl->version,
-		dsi_ctrl->cell_index, dsi_ctrl->phy_isolation_enabled,
+		dsi_ctrl->cell_index, dsi_ctrl->phy_pll_bypass,
 		dsi_ctrl->null_insertion_enabled);
 	if (rc) {
 		DSI_CTRL_ERR(dsi_ctrl, "Catalog does not support version (%d)\n",
@@ -2316,7 +2318,8 @@ struct dsi_ctrl *dsi_ctrl_get(struct device_node *of_node)
 	}
 
 	mutex_lock(&ctrl->ctrl_lock);
-	if (ctrl->refcount == 1) {
+	if ((ctrl->dsi_ctrl_shared && ctrl->refcount == 2) ||
+		(!ctrl->dsi_ctrl_shared && ctrl->refcount == 1)) {
 		DSI_CTRL_ERR(ctrl, "Device in use\n");
 		mutex_unlock(&ctrl->ctrl_lock);
 		ctrl = ERR_PTR(-EBUSY);
@@ -2520,13 +2523,14 @@ exit:
  * dsi_ctrl_timing_db_update() - update only controller Timing DB
  * @dsi_ctrl:          DSI controller handle.
  * @enable:            Enable/disable Timing DB register
+ * @pf_time_in_us:           Programmable fetch time in micro-seconds
  *
  *  Update timing db register value during dfps usecases
  *
  * Return: error code.
  */
 int dsi_ctrl_timing_db_update(struct dsi_ctrl *dsi_ctrl,
-		bool enable)
+		bool enable, u32 pf_time_in_us)
 {
 	int rc = 0;
 
@@ -2554,7 +2558,13 @@ int dsi_ctrl_timing_db_update(struct dsi_ctrl *dsi_ctrl,
 	 * flush is after panel_vsync. So, added the recommended
 	 * delays after dfps update.
 	 */
-	usleep_range(2000, 2010);
+	if (pf_time_in_us > 2000) {
+		DSI_CTRL_ERR(dsi_ctrl, "Programmable fetch time check failed, pf_time_in_us=%u\n",
+				pf_time_in_us);
+		pf_time_in_us = 2000;
+	}
+
+	usleep_range(pf_time_in_us, pf_time_in_us + 10);
 
 	dsi_ctrl->hw.ops.set_timing_db(&dsi_ctrl->hw, enable);
 
@@ -2853,14 +2863,14 @@ static irqreturn_t dsi_ctrl_isr(int irq, void *ptr)
 		if (dsi_ctrl->enable_cmd_dma_stats) {
 			u32 reg = dsi_ctrl->hw.ops.log_line_count(&dsi_ctrl->hw,
 						dsi_ctrl->cmd_mode);
-			atomic_set(&dsi_ctrl->cmd_success_line, (reg & 0xFFFF));
-			atomic_set(&dsi_ctrl->cmd_success_frame, ((reg >> 16) & 0xFFFF));
+			dsi_ctrl->cmd_success_line = (reg & 0xFFFF);
+			dsi_ctrl->cmd_success_frame = ((reg >> 16) & 0xFFFF);
 			SDE_EVT32(dsi_ctrl->cell_index,	SDE_EVTLOG_FUNC_CASE1,
 					dsi_ctrl->cmd_success_line,
 					dsi_ctrl->cmd_success_frame);
 		}
 
-		atomic64_set(&dsi_ctrl->cmd_success_ts, ktime_get());
+		dsi_ctrl->cmd_success_ts =  ktime_get();
 		atomic_set(&dsi_ctrl->dma_irq_trig, 1);
 		dsi_ctrl_disable_status_interrupt(dsi_ctrl,
 					DSI_SINT_CMD_MODE_DMA_DONE);
@@ -2919,7 +2929,6 @@ static irqreturn_t dsi_ctrl_isr(int irq, void *ptr)
 static int _dsi_ctrl_setup_isr(struct dsi_ctrl *dsi_ctrl)
 {
 	int irq_num, rc;
-	uint32_t intr_idx;
 
 	if (!dsi_ctrl)
 		return -EINVAL;
@@ -2930,21 +2939,6 @@ static int _dsi_ctrl_setup_isr(struct dsi_ctrl *dsi_ctrl)
 	init_completion(&dsi_ctrl->irq_info.vid_frame_done);
 	init_completion(&dsi_ctrl->irq_info.cmd_frame_done);
 	init_completion(&dsi_ctrl->irq_info.bta_done);
-
-	 /*
-	 * If there is an unbalanced refcount for any interrupt, irq_stat_mask
-	 * remain non zero on suspend. Due to this, enable_irq does not get
-	 * called on resume, leading to ctrl ISR permanently disabled.
-	 */
-	for (intr_idx = 0; intr_idx < DSI_STATUS_INTERRUPT_COUNT; intr_idx++) {
-	 if (dsi_ctrl->irq_info.irq_stat_refcount[intr_idx]) {
-	 DSI_CTRL_ERR(dsi_ctrl,
-	 "[drm tmp debug log]refcount mismatch, intr_idx %d\n", intr_idx);
-	 SDE_EVT32(intr_idx, dsi_ctrl->irq_info.irq_stat_mask,
-	 dsi_ctrl->irq_info.irq_stat_refcount[intr_idx]);
-	 SDE_DBG_DUMP(SDE_DBG_BUILT_IN_ALL, "panic");
-	 }
-	 }
 
 	irq_num = platform_get_irq(dsi_ctrl->pdev, 0);
 	if (irq_num < 0) {
@@ -2997,20 +2991,6 @@ void dsi_ctrl_enable_status_interrupt(struct dsi_ctrl *dsi_ctrl,
 		dsi_ctrl->irq_info.irq_stat_refcount[intr_idx]);
 
 	spin_lock_irqsave(&dsi_ctrl->irq_info.irq_lock, flags);
-
-	if (intr_idx == DSI_SINT_CMD_MODE_DMA_DONE) {
-		if (dsi_ctrl->irq_info.irq_stat_refcount[intr_idx]) {
-			dsi_ctrl->refcount_non_zero++;
-			SDE_EVT32(dsi_ctrl->refcount_non_zero);
-			if (dsi_ctrl->refcount_non_zero == 3) {
-				DSI_CTRL_ERR(dsi_ctrl, "refcount_non_zero %d\n",
-					dsi_ctrl->refcount_non_zero);
-				SDE_DBG_DUMP(SDE_DBG_BUILT_IN_ALL, "panic");
-			}
-		} else {
-			dsi_ctrl->refcount_non_zero = 0;
-		}
-	}
 
 	if (dsi_ctrl->irq_info.irq_stat_refcount[intr_idx] == 0) {
 		/* enable irq on first request */
@@ -3454,9 +3434,10 @@ int dsi_ctrl_transfer_prepare(struct dsi_ctrl *dsi_ctrl, u32 flags)
 	SDE_EVT32(SDE_EVTLOG_FUNC_ENTRY, dsi_ctrl->cell_index, flags);
 
 	/* Vote for clocks, gdsc, enable command engine, mask overflow */
-	rc = pm_runtime_get_sync(dsi_ctrl->drm_dev->dev);
+	rc = pm_runtime_resume_and_get(dsi_ctrl->drm_dev->dev);
 	if (rc < 0) {
-		DSI_CTRL_ERR(dsi_ctrl, "failed gdsc voting\n");
+		DSI_CTRL_ERR(dsi_ctrl, "failed to enable power resource %d\n", rc);
+		SDE_EVT32(rc, SDE_EVTLOG_ERROR);
 		return rc;
 	}
 
@@ -3467,7 +3448,7 @@ int dsi_ctrl_transfer_prepare(struct dsi_ctrl *dsi_ctrl, u32 flags)
 	rc = dsi_ctrl->clk_cb.dsi_clk_cb(dsi_ctrl->clk_cb.priv, clk_info);
 	if (rc) {
 		DSI_CTRL_ERR(dsi_ctrl, "failed to enable clocks\n");
-		goto error_disable_clks;
+		goto error_disable_gdsc;
 	}
 
 	/* Wait till any previous ASYNC waits are scheduled and completed */
@@ -3494,6 +3475,7 @@ error_disable_clks:
 	clk_info.clk_state = DSI_CLK_OFF;
 	(void)dsi_ctrl->clk_cb.dsi_clk_cb(dsi_ctrl->clk_cb.priv, clk_info);
 
+error_disable_gdsc:
 	(void)pm_runtime_put_sync(dsi_ctrl->drm_dev->dev);
 
 	return rc;
@@ -3515,10 +3497,6 @@ error_disable_clks:
 int dsi_ctrl_cmd_transfer(struct dsi_ctrl *dsi_ctrl, struct dsi_cmd_desc *cmd)
 {
 	int rc = 0;
-	int i = 0;
-	u8 *pcmddata = NULL;
-	char dbgcmd[4] = {0};
-	unsigned char *dbgcmds = NULL;
 
 	if (!dsi_ctrl || !cmd) {
 		DSI_CTRL_ERR(dsi_ctrl, "Invalid params\n");
@@ -3533,26 +3511,13 @@ int dsi_ctrl_cmd_transfer(struct dsi_ctrl *dsi_ctrl, struct dsi_cmd_desc *cmd)
 			DSI_CTRL_ERR(dsi_ctrl, "read message failed read length, rc=%d\n",
 					rc);
 	} else {
-	       if (dsi_ctrl->mipi_cmd_log_en) {
-	           dbgcmds = kzalloc(cmd->msg.tx_len * 4 + 1, GFP_KERNEL);
-	           if (dbgcmds) {
-			pcmddata = (u8*)cmd->msg.tx_buf;
-			for (i = 0; i < cmd->msg.tx_len; i++) {
-				snprintf(dbgcmd, 4, " %2x", pcmddata[i]);
-				strcat(dbgcmds, dbgcmd);
-			}
-			printk("%s: dsi_ctrl_cmd_transfer len=%zd, type=0x%x %s cmds=%s\n",
-				   dsi_ctrl->name, cmd->msg.tx_len, cmd->msg.type, (cmd->msg.flags & MIPI_DSI_MSG_USE_LPM) ? "hs" : "lp", dbgcmds);
-			kfree(dbgcmds);
-	           }
-		}
 		rc = dsi_message_tx(dsi_ctrl, cmd);
 		if (rc)
 			DSI_CTRL_ERR(dsi_ctrl, "command msg transfer failed, rc = %d\n",
 					rc);
 	}
 
-	cmd->ts = atomic64_read(&dsi_ctrl->cmd_success_ts);
+	cmd->ts = dsi_ctrl->cmd_success_ts;
 	dsi_ctrl_update_state(dsi_ctrl, DSI_CTRL_OP_CMD_TX, 0x0);
 
 	mutex_unlock(&dsi_ctrl->ctrl_lock);
@@ -3810,7 +3775,9 @@ error:
  *
  * Return: error code.
  */
-int dsi_ctrl_set_tpg_state(struct dsi_ctrl *dsi_ctrl, bool on)
+int dsi_ctrl_set_tpg_state(struct dsi_ctrl *dsi_ctrl, bool on,
+			enum dsi_test_pattern type, u32 init_val,
+			enum dsi_ctrl_tpg_pattern pattern)
 {
 	int rc = 0;
 
@@ -3829,25 +3796,43 @@ int dsi_ctrl_set_tpg_state(struct dsi_ctrl *dsi_ctrl, bool on)
 	}
 
 	if (on) {
-		if (dsi_ctrl->host_config.panel_mode == DSI_OP_VIDEO_MODE) {
-			dsi_ctrl->hw.ops.video_test_pattern_setup(&dsi_ctrl->hw,
-							  DSI_TEST_PATTERN_INC,
-							  0xFFFF);
-		} else {
-			dsi_ctrl->hw.ops.cmd_test_pattern_setup(
-							&dsi_ctrl->hw,
-							DSI_TEST_PATTERN_INC,
-							0xFFFF,
-							0x0);
-		}
+		if (dsi_ctrl->host_config.panel_mode == DSI_OP_VIDEO_MODE)
+			dsi_ctrl->hw.ops.video_test_pattern_setup(&dsi_ctrl->hw, type, init_val);
+		else
+			dsi_ctrl->hw.ops.cmd_test_pattern_setup(&dsi_ctrl->hw, type, init_val, 0x0);
 	}
-	dsi_ctrl->hw.ops.test_pattern_enable(&dsi_ctrl->hw, on);
+	dsi_ctrl->hw.ops.test_pattern_enable(&dsi_ctrl->hw, on, pattern,
+			dsi_ctrl->host_config.panel_mode);
 
 	DSI_CTRL_DEBUG(dsi_ctrl, "Set test pattern state=%d\n", on);
 	dsi_ctrl_update_state(dsi_ctrl, DSI_CTRL_OP_TPG, on);
 error:
 	mutex_unlock(&dsi_ctrl->ctrl_lock);
 	return rc;
+}
+
+/**
+ * dsi_ctrl_trigger_test_pattern() - trigger a command mode frame update with test pattern
+ * @dsi_ctrl:           DSI controller handle.
+ *
+ * Trigger a command mode frame update with chosen test pattern.
+ *
+ * Return: error code.
+ */
+int dsi_ctrl_trigger_test_pattern(struct dsi_ctrl *dsi_ctrl)
+{
+	int ret = 0;
+
+	if (!dsi_ctrl) {
+		DSI_CTRL_ERR(dsi_ctrl, "Invalid params\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&dsi_ctrl->ctrl_lock);
+	dsi_ctrl->hw.ops.trigger_cmd_test_pattern(&dsi_ctrl->hw, 0);
+	mutex_unlock(&dsi_ctrl->ctrl_lock);
+
+	return ret;
 }
 
 /**

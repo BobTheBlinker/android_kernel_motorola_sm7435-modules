@@ -77,22 +77,6 @@ enum sde_crtc_idle_pc_state {
 };
 
 /**
- * enum sde_crtc_cache_state: states of disp system cache
- * CACHE_STATE_DISABLED: sys cache has been disabled
- * CACHE_STATE_ENABLED: sys cache has been enabled
- * CACHE_STATE_NORMAL: sys cache is normal state
- * CACHE_STATE_FRAME_WRITE: sys cache is being written to
- * CACHE_STATE_FRAME_READ: sys cache is being read
- */
-enum sde_crtc_cache_state {
-	CACHE_STATE_DISABLED,
-	CACHE_STATE_ENABLED,
-	CACHE_STATE_NORMAL,
-	CACHE_STATE_FRAME_WRITE,
-	CACHE_STATE_FRAME_READ
-};
-
-/**
  * enum sde_crtc_vm_req: request for VM operations
  * @VM_REQ_NONE: no request. Normal VM operations.
  * @VM_REQ_RELEASE: request to release the HW resources from the current VM
@@ -263,6 +247,32 @@ struct sde_frame_data {
 };
 
 /**
+ * struct sde_opr_value - defines sde opr value structure
+ * @num_valid_opr : count of valid opr values
+ * @opr_value : list of opr value
+ */
+struct sde_opr_value {
+	atomic_t num_valid_opr;
+	u32 opr_value[MAX_DSI_DISPLAYS];
+};
+
+/**
+ * enum sde_crtc_hw_fence_flags - flags to enable/disable hw fence features
+ * @HW_FENCE_OUT_FENCES_ENABLE: enables creation of hw fences for crtc output fences
+ * @HW_FENCE_IN_FENCES_ENABLE: enables hw fences for input-fences that are candidates for hw wait
+ *                   (i.e. they have the dma-fence flag for dma-fences set), this allows to
+ *                   selectively enable/disable input-fences, regardless of the dma-fence flags.
+ * @HW_FENCE-IN_FENCES_NO_OVERRIDE: skip the sw-override of the input hw-fences signal.
+ * @HW_FENCE_FEATURES_MAX: max number of features.
+ */
+enum sde_crtc_hw_fence_flags {
+	HW_FENCE_OUT_FENCES_ENABLE,
+	HW_FENCE_IN_FENCES_ENABLE,
+	HW_FENCE_IN_FENCES_NO_OVERRIDE,
+	HW_FENCE_FEATURES_MAX,
+};
+
+/**
  * struct sde_crtc - virtualized CRTC data structure
  * @base          : Base drm crtc structure
  * @name          : ASCII description of this crtc
@@ -340,6 +350,7 @@ struct sde_frame_data {
  * @target_bpp      : target bpp used to calculate compression ratio
  * @static_cache_read_work: delayed worker to transition cache state to read
  * @cache_state     : Current static image cache state
+ * @cache_type      : Current static image cache type to use
  * @dspp_blob_info  : blob containing dspp hw capability information
  * @cached_encoder_mask : cached encoder_mask for vblank work
  * @valid_skip_blend_plane: flag to indicate if skip blend plane is valid
@@ -348,6 +359,12 @@ struct sde_frame_data {
  * @skip_blend_plane_h: skip blend plane height
  * @line_time_in_ns : current mode line time in nano sec is needed for QOS update
  * @frame_data      : Framedata data structure
+ * @previous_opr_value : store previous opr values
+ * @opr_event_notify_enabled : Flag to indicate if opr event notify is enabled or not
+ * @hwfence_features_mask : u32 mask to enable/disable hw fence features. See enum
+ *                          sde_crtc_hw_fence_flags for available fields.
+ * @hwfence_out_fences_skip: number of frames to skip before create a new hw-fence, this can be
+ *                   used to slow-down creation of output hw-fences for debugging purposes.
  */
 struct sde_crtc {
 	struct drm_crtc base;
@@ -443,7 +460,8 @@ struct sde_crtc {
 	int target_bpp;
 
 	struct kthread_delayed_work static_cache_read_work;
-	enum sde_crtc_cache_state cache_state;
+	enum sde_sys_cache_state cache_state;
+	enum sde_sys_cache_type cache_type;
 
 	struct drm_property_blob *dspp_blob_info;
 	u32 cached_encoder_mask;
@@ -455,6 +473,12 @@ struct sde_crtc {
 	u32 line_time_in_ns;
 
 	struct sde_frame_data frame_data;
+
+	struct sde_opr_value previous_opr_value;
+	bool opr_event_notify_enabled;
+
+	DECLARE_BITMAP(hwfence_features_mask, HW_FENCE_FEATURES_MAX);
+	u32 hwfence_out_fences_skip;
 };
 
 enum sde_crtc_dirty_flags {
@@ -465,6 +489,20 @@ enum sde_crtc_dirty_flags {
 };
 
 #define to_sde_crtc(x) container_of(x, struct sde_crtc, base)
+
+/**
+ * struct sde_line_insertion_param - sde line insertion parameters
+ * @panel_line_insertion_enable: line insertion support status
+ * @padding_height: panel height after line padding
+ * @padding_active: active lines in panel stacking pattern
+ * @padding_dummy: dummy lines in panel stacking pattern
+ */
+struct sde_line_insertion_param {
+	bool panel_line_insertion_enable;
+	u32 padding_height;
+	u32 padding_active;
+	u32 padding_dummy;
+};
 
 /**
  * struct sde_crtc_state - sde container for atomic crtc state
@@ -488,6 +526,7 @@ enum sde_crtc_dirty_flags {
  * @input_fence_timeout_ns : Cached input fence timeout, in ns
  * @num_dim_layers: Number of dim layers
  * @cwb_enc_mask  : encoder mask populated during atomic_check if CWB is enabled
+ * @cached_cwb_enc_mask  : cached encoder mask populated during atomic_check if CWB is enabled
  * @dim_layer: Dim layer configs
  * @num_ds: Number of destination scalers to be configured
  * @num_ds_enabled: Number of destination scalers enabled
@@ -501,6 +540,8 @@ enum sde_crtc_dirty_flags {
  * @cp_dirty_list: array tracking features that are dirty
  * @cp_range_payload: array storing state user_data passed via range props
  * @cont_splash_populated: State was populated as part of cont. splash
+ * @param: sde line insertion parameters
+ * @hwfence_in_fences_set: input hw fences are configured for the commit
  */
 struct sde_crtc_state {
 	struct drm_crtc_state base;
@@ -524,6 +565,7 @@ struct sde_crtc_state {
 	uint64_t input_fence_timeout_ns;
 	uint32_t num_dim_layers;
 	uint32_t cwb_enc_mask;
+	uint32_t cached_cwb_enc_mask;
 	struct sde_hw_dim_layer dim_layer[SDE_MAX_DIM_LAYERS];
 	uint32_t num_ds;
 	uint32_t num_ds_enabled;
@@ -540,6 +582,8 @@ struct sde_crtc_state {
 	struct sde_cp_crtc_range_prop_payload
 		cp_range_payload[SDE_CP_CRTC_MAX_FEATURES];
 	bool cont_splash_populated;
+	struct sde_line_insertion_param line_insertion;
+	bool hwfence_in_fences_set;
 };
 
 enum sde_crtc_irq_state {
@@ -579,50 +623,6 @@ struct sde_crtc_irq_info {
  */
 #define sde_crtc_get_property(S, X) \
 	((S) && ((X) < CRTC_PROP_COUNT) ? ((S)->property_values[(X)].value) : 0)
-
-/**
- * sde_crtc_is_connector_fsc - check if connector is in fsc mode
- * @cstate: Pointer to sde crtc state
- * Returns: true if fsc to fsc mode else false
- */
-bool sde_crtc_is_connector_fsc(struct sde_crtc_state *cstate);
-
-/**
- * sde_crtc_get_mixer_width - get the mixer width
- * Mixer width will be same as panel width(/2 for split)
- * unless destination scaler feature is enabled
- */
-static inline int sde_crtc_get_mixer_width(struct sde_crtc *sde_crtc,
-	struct sde_crtc_state *cstate, struct drm_display_mode *mode)
-{
-	u32 mixer_width;
-
-	if (!sde_crtc || !cstate || !mode)
-		return 0;
-
-	if (cstate->num_ds_enabled)
-		mixer_width = cstate->ds_cfg[0].lm_width;
-	else
-		mixer_width = GET_MODE_WIDTH(sde_crtc_is_connector_fsc(cstate), mode) /
-				sde_crtc->num_mixers;
-
-	return mixer_width;
-}
-
-/**
- * sde_crtc_get_mixer_height - get the mixer height
- * Mixer height will be same as panel height unless
- * destination scaler feature is enabled
- */
-static inline int sde_crtc_get_mixer_height(struct sde_crtc *sde_crtc,
-		struct sde_crtc_state *cstate, struct drm_display_mode *mode)
-{
-	if (!sde_crtc || !cstate || !mode)
-		return 0;
-
-	return (cstate->num_ds_enabled ? cstate->ds_cfg[0].lm_height :
-			GET_MODE_HEIGHT(sde_crtc_is_connector_fsc(cstate), mode));
-}
 
 /**
  * sde_crtc_frame_pending - retun the number of pending frames
@@ -666,6 +666,19 @@ int sde_crtc_reset_hw(struct drm_crtc *crtc, struct drm_crtc_state *old_state,
 	bool recovery_events);
 
 /**
+ * sde_crtc_dump_fences - dump info for input fences of each crtc plane
+ * @crtc: Pointer to DRM crtc instance
+ */
+void sde_crtc_dump_fences(struct drm_crtc *crtc);
+
+/**
+ * sde_crtc_is_fence_signaled - check if all fences have been signaled
+ * @crtc: Pointer to DRM crtc instance
+ * Returns: true if all fences are signaled, otherwise false.
+ */
+bool sde_crtc_is_fence_signaled(struct drm_crtc *crtc);
+
+/**
  * sde_crtc_request_frame_reset - requests for next frame reset
  * @crtc: Pointer to drm crtc object
  * @encoder: Pointer to drm encoder object
@@ -675,12 +688,41 @@ static inline int sde_crtc_request_frame_reset(struct drm_crtc *crtc,
 {
 	struct sde_crtc *sde_crtc = to_sde_crtc(crtc);
 
+	if (test_bit(HW_FENCE_IN_FENCES_ENABLE, sde_crtc->hwfence_features_mask))
+		sde_crtc_dump_fences(crtc);
+
 	if (sde_crtc->frame_trigger_mode == FRAME_DONE_WAIT_POSTED_START ||
 			!sde_encoder_is_dsi_display(encoder))
 		sde_crtc_reset_hw(crtc, crtc->state, false);
 
 	return 0;
 }
+
+/**
+ * sde_crtc_get_mixer_resolution - Get the mixer resolution based on the features enabled.
+ *     Mixer width will be same as panel width(/2 for split) or src_width of
+ *     destination scaler or downscale-blur.
+ * @drm_crtc: Pointer to drm crtc object
+ * @crtc_state: Pointer to drm crtc state object
+ * @mode: Pointer to drm display mode object
+ * @width: Pointer to width object populated with mixer width by this function
+ * @height: Pointer to height object populated with mixer height by this function
+ */
+void sde_crtc_get_mixer_resolution(struct drm_crtc *sde_crtc, struct drm_crtc_state *crtc_state,
+		struct drm_display_mode *mode, u32 *width, u32 *height);
+
+/**
+ * sde_crtc_get_resolution - Get the crtc resolution based on the features enabled.
+ *     Crtc width will be same as panel width or (src_width of
+ *     destination scaler or downscale-blur) * num_blocks.
+ * @drm_crtc: Pointer to drm crtc object
+ * @crtc_state: Pointer to drm crtc state object
+ * @mode: Pointer to drm display mode object
+ * @width: Pointer to width object populated with crtc width by this function
+ * @height: Pointer to height object populated with crtc height by this function
+ */
+void sde_crtc_get_resolution(struct drm_crtc *sde_crtc, struct drm_crtc_state *crtc_state,
+		struct drm_display_mode *mode, u32 *width, u32 *height);
 
 /**
  * sde_crtc_vblank - enable or disable vblanks for this crtc
@@ -772,6 +814,12 @@ u32 sde_crtc_get_fps_mode(struct drm_crtc *crtc);
  * @crtc: Pointert to crtc
  */
 u32 sde_crtc_get_dfps_maxfps(struct drm_crtc *crtc);
+
+/**
+ * sde_crtc_get_wb_usage_type - get writeback usage type
+ * @crtc: Pointert to crtc
+ */
+enum sde_wb_usage_type sde_crtc_get_wb_usage_type(struct drm_crtc *crtc);
 
 /**
  * sde_crtc_get_client_type - check the crtc type- rt, rsc_rt, etc.
@@ -928,6 +976,32 @@ static inline bool sde_crtc_state_in_clone_mode(struct drm_encoder *encoder,
 }
 
 /**
+ * sde_crtc_get_ds_io_res - populates the destination scaler src/dst w/h
+ * @state: pointer to drm crtc state
+ * @res: pointer to the output struct to populate the src/dst
+ */
+static inline void sde_crtc_get_ds_io_res(struct drm_crtc_state *state, struct sde_io_res *res)
+{
+	struct sde_crtc_state *cstate;
+	int i;
+
+	if (!state || !res)
+		return;
+
+	cstate = to_sde_crtc_state(state);
+	memset(res, 0, sizeof(struct sde_io_res));
+	for (i = 0; i < cstate->num_ds; i++) {
+		if (cstate->ds_cfg[i].scl3_cfg.enable) {
+			res->enabled = true;
+			res->src_w += cstate->ds_cfg[i].lm_width;
+			res->dst_w += cstate->ds_cfg[i].scl3_cfg.dst_width;
+			res->src_h = cstate->ds_cfg[i].lm_height;
+			res->dst_h = cstate->ds_cfg[i].scl3_cfg.dst_height;
+		}
+	}
+}
+
+/**
  * sde_crtc_get_secure_transition - determines the operations to be
  * performed before transitioning to secure state
  * This function should be called after swapping the new state
@@ -1037,7 +1111,7 @@ static inline void sde_crtc_set_bpp(struct sde_crtc *sde_crtc, int src_bpp,
  * @is_vidmode: if encoder is video mode
  */
 void sde_crtc_static_img_control(struct drm_crtc *crtc,
-		enum sde_crtc_cache_state state, bool is_vidmode);
+		enum sde_sys_cache_state state, bool is_vidmode);
 
 /**
  * sde_crtc_static_cache_read_kickoff - kickoff cache read work
@@ -1093,11 +1167,24 @@ struct drm_encoder *sde_crtc_get_src_encoder_of_clone(struct drm_crtc *crtc);
  */
 void _sde_crtc_vm_release_notify(struct drm_crtc *crtc);
 
-/**
- * sde_crtc_state_setup_connector - populate connectors in sde crtc state
- * @state: Pointer to drm crtc state
- * @dev: Pointer to drm device
+/*
+ * sde_crtc_is_line_insertion_supported - get lineinsertion
+ * feature bit value from panel
+ * @drm_crtc:    Pointer to drm crtc structure
+ * @Return: line insertion support status
  */
-void sde_crtc_state_setup_connectors(struct drm_crtc_state *state, struct drm_device *dev);
+bool sde_crtc_is_line_insertion_supported(struct drm_crtc *crtc);
+
+/**
+ * sde_crtc_calc_vpadding_param - calculate vpadding parameters
+ * @state: Pointer to DRM crtc state object
+ * @crtc_y: Plane's CRTC_Y offset
+ * @crtc_h: Plane's CRTC_H size
+ * @padding_y: Padding Y offset
+ * @padding_start: Padding start offset
+ * @padding_height: Padding height in total
+ */
+void sde_crtc_calc_vpadding_param(struct drm_crtc_state *state, u32 crtc_y, u32 crtc_h,
+				  u32 *padding_y, u32 *padding_start, u32 *padding_height);
 
 #endif /* _SDE_CRTC_H_ */

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
+#define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 #include "sde_hw_mdss.h"
 #include "sde_hwio.h"
 #include "sde_hw_catalog.h"
@@ -22,19 +23,8 @@
 #define WB_DST3_ADDR			0x018
 #define WB_DST_YSTRIDE0			0x01C
 #define WB_DST_YSTRIDE1			0x020
-#define WB_DST_YSTRIDE1			0x020
-#define WB_DST_DITHER_BITDEPTH		0x024
-#define WB_DST_MATRIX_ROW0		0x030
-#define WB_DST_MATRIX_ROW1		0x034
-#define WB_DST_MATRIX_ROW2		0x038
-#define WB_DST_MATRIX_ROW3		0x03C
+#define WB_TS_WR_CLIENT	                0x040
 #define WB_DST_WRITE_CONFIG		0x048
-#define WB_ROTATION_DNSCALER		0x050
-#define WB_ROTATOR_PIPE_DOWNSCALER	0x054
-#define WB_N16_INIT_PHASE_X_C03		0x060
-#define WB_N16_INIT_PHASE_X_C12		0x064
-#define WB_N16_INIT_PHASE_Y_C03		0x068
-#define WB_N16_INIT_PHASE_Y_C12		0x06C
 #define WB_OUT_SIZE			0x074
 #define WB_ALPHA_X_VALUE		0x078
 #define WB_DANGER_LUT			0x084
@@ -48,11 +38,15 @@
 #define WB_CROP_OFFSET			0x158
 #define WB_CLK_CTRL			0x178
 #define WB_CLK_STATUS			0x17C
+#define WB_LINE_COUNT			0x184
+#define WB_PROG_LINE_COUNT		0x188
 #define WB_CSC_BASE			0x260
 #define WB_DST_ADDR_SW_STATUS		0x2B0
 #define WB_CDP_CNTL			0x2B4
+#define WB_UBWC_ERROR_STATUS		0x2BC
 #define WB_OUT_IMAGE_SIZE		0x2C0
 #define WB_OUT_XY			0x2C4
+#define WB_SYS_CACHE_MODE		0x094
 
 #define CWB_CTRL_SRC_SEL		0x0
 #define CWB_CTRL_MODE			0x4
@@ -72,7 +66,7 @@ static struct sde_wb_cfg *_wb_offset(enum sde_wb wb,
 			b->base_off = addr;
 			b->blk_off = m->wb[i].base;
 			b->length = m->wb[i].len;
-			b->hwversion = m->hwversion;
+			b->hw_rev = m->hw_rev;
 			b->log_mask = SDE_DBG_MASK_WB;
 			return &m->wb[i];
 		}
@@ -91,9 +85,9 @@ static void _sde_hw_cwb_ctrl_init(struct sde_mdss_cfg *m,
 		return;
 
 	b->base_off = addr;
-	b->blk_off = m->cwb_blk_off;
+	b->blk_off = m->cwb_blk_off[0];
 	b->length = 0x20;
-	b->hwversion = m->hwversion;
+	b->hw_rev = m->hw_rev;
 	b->log_mask = SDE_DBG_MASK_WB;
 
 	for (i = 0; i < m->pingpong_count; i++) {
@@ -106,27 +100,37 @@ static void _sde_hw_cwb_ctrl_init(struct sde_mdss_cfg *m,
 }
 
 static void _sde_hw_dcwb_ctrl_init(struct sde_mdss_cfg *m,
-		void __iomem *addr, struct sde_hw_blk_reg_map *b)
+		void __iomem *addr, struct sde_hw_wb *hw_wb)
 {
-	int i;
+	int i, j, dcwb_count, blk_count;
 	u32 blk_off;
 	char name[64] = {0};
 
-	if (!b)
+	if (!hw_wb || !m->dcwb_count)
 		return;
 
-	b->base_off = addr;
-	b->blk_off = m->cwb_blk_off;
-	b->length = 0x20;
-	b->hwversion = m->hwversion;
-	b->log_mask = SDE_DBG_MASK_WB;
+	dcwb_count = (m->dcwb_count < MAX_CWB_BLOCKSIZE) ? m->dcwb_count :
+		(m->dcwb_count / MAX_CWB_BLOCKSIZE);
 
-	for (i = 0; i < m->dcwb_count; i++) {
-		snprintf(name, sizeof(name), "dcwb%d", i);
-		blk_off = b->blk_off + (m->cwb_blk_stride * i);
+	if (dcwb_count == m->dcwb_count)
+		blk_count = m->dcwb_count;
+	else
+		blk_count = MAX_CWB_BLOCKSIZE;
 
-		sde_dbg_reg_register_dump_range(SDE_DBG_NAME, name,
-				blk_off, blk_off + b->length, 0xff);
+	for (j = 0; j < dcwb_count; j++) {
+		hw_wb->dcwb_hw[j].base_off = addr;
+		hw_wb->dcwb_hw[j].blk_off = m->cwb_blk_off[j];
+		hw_wb->dcwb_hw[j].length = 0x20;
+		hw_wb->dcwb_hw[j].hw_rev = m->hw_rev;
+		hw_wb->dcwb_hw[j].log_mask = SDE_DBG_MASK_WB;
+
+		for (i = 0; i < blk_count; i++) {
+			snprintf(name, sizeof(name), "dcwb%d", i);
+			blk_off = hw_wb->dcwb_hw[j].blk_off + (m->cwb_blk_stride * i);
+
+			sde_dbg_reg_register_dump_range(SDE_DBG_NAME, name,
+					blk_off, blk_off + hw_wb->dcwb_hw[j].length, 0xff);
+		}
 	}
 }
 
@@ -150,7 +154,7 @@ static void _sde_hw_dcwb_pp_ctrl_init(struct sde_mdss_cfg *m,
 				hw_wb->dcwb_pp_hw[dcwb_pp_count].hw.base_off = addr;
 				hw_wb->dcwb_pp_hw[dcwb_pp_count].hw.blk_off = pp_blk->base;
 				hw_wb->dcwb_pp_hw[dcwb_pp_count].hw.length = pp_blk->len;
-				hw_wb->dcwb_pp_hw[dcwb_pp_count].hw.hwversion = m->hwversion;
+				hw_wb->dcwb_pp_hw[dcwb_pp_count].hw.hw_rev = m->hw_rev;
 				hw_wb->dcwb_pp_hw[dcwb_pp_count].hw.log_mask = SDE_DBG_MASK_WB;
 			} else {
 				DRM_ERROR("Invalid dcwb pp count %d more than %d",
@@ -199,12 +203,18 @@ static void sde_hw_wb_setup_format(struct sde_hw_wb *ctx,
 			dst_format |= BIT(14); /* DST_ALPHA_X */
 	}
 
-	if (SDE_FORMAT_IS_YUV(fmt) &&
-			(ctx->caps->features & BIT(SDE_WB_YUV_CONFIG)))
+	if (SDE_FORMAT_IS_YUV(fmt))
 		dst_format |= BIT(15);
 
 	if (SDE_FORMAT_IS_DX(fmt))
 		dst_format |= BIT(21);
+
+	/* Set A5x tile bit for uncompressed tile formats also */
+	if (SDE_FORMAT_IS_TILE(fmt))
+		dst_format |= BIT(31);
+
+	if (data->rotate_90)
+		dst_format |= BIT(11);
 
 	pattern = (fmt->element[3] << 24) |
 			(fmt->element[2] << 16) |
@@ -232,11 +242,11 @@ static void sde_hw_wb_setup_format(struct sde_hw_wb *ctx,
 		write_config |= (ctx->mdp->highest_bank_bit << 8);
 		if (fmt->base.pixel_format == DRM_FORMAT_RGB565)
 			write_config |= 0x8;
-		if (IS_UBWC_20_SUPPORTED(ctx->catalog->ubwc_version))
+		if (IS_UBWC_20_SUPPORTED(ctx->catalog->ubwc_rev))
 			SDE_REG_WRITE(c, WB_UBWC_STATIC_CTRL,
 					(ctx->mdp->ubwc_swizzle << 0) |
 					(ctx->mdp->highest_bank_bit << 4));
-		if (IS_UBWC_10_SUPPORTED(ctx->catalog->ubwc_version))
+		if (IS_UBWC_10_SUPPORTED(ctx->catalog->ubwc_rev))
 			SDE_REG_WRITE(c, WB_UBWC_STATIC_CTRL,
 					(ctx->mdp->ubwc_swizzle << 0) |
 					BIT(8) |
@@ -276,8 +286,9 @@ static void sde_hw_wb_crop(struct sde_hw_wb *ctx, struct sde_hw_wb_cfg *wb, bool
 	struct sde_hw_blk_reg_map *c = &ctx->hw;
 	u32 crop_xy;
 
+	crop_xy = (wb->crop.y << 16) | wb->crop.x;
+
 	if (crop) {
-		crop_xy = (wb->crop.y << 16) | wb->crop.x;
 		SDE_REG_WRITE(c, WB_CROP_CTRL, 0x1);
 		SDE_REG_WRITE(c, WB_CROP_OFFSET, crop_xy);
 	} else {
@@ -304,6 +315,11 @@ static void sde_hw_wb_setup_qos_lut(struct sde_hw_wb *ctx,
 
 	if (cfg->danger_safe_en)
 		qos_ctrl |= WB_QOS_CTRL_DANGER_SAFE_EN;
+
+	if (test_bit(SDE_WB_LINEAR_ROTATION, &ctx->caps->features)) {
+		SDE_REG_WRITE(c, WB_TS_WR_CLIENT, cfg->bytes_per_clk & 0xFF);
+		qos_ctrl |= (cfg->qos_mode << 1);
+	}
 
 	SDE_REG_WRITE(c, WB_QOS_CTRL, qos_ctrl);
 }
@@ -360,7 +376,7 @@ static void sde_hw_wb_bind_dcwb_pp_blk(
 
 	c = &ctx->hw;
 	if (enable)
-		mux_cfg = 0xd;
+		mux_cfg = (pp < PINGPONG_CWB_2) ? 0xd : 0xb;
 
 	SDE_REG_WRITE(c, WB_MUX, mux_cfg);
 }
@@ -371,12 +387,14 @@ static void sde_hw_wb_program_dcwb_ctrl(struct sde_hw_wb *ctx,
 {
 	struct sde_hw_blk_reg_map *c;
 	u32 blk_base;
+	int idx;
 
 	if (!ctx)
 		return;
 
-	c = &ctx->dcwb_hw;
-	blk_base  = ctx->catalog->cwb_blk_stride * (cur_idx - DCWB_0);
+	idx = (cur_idx < DCWB_2) ? 0 : 1;
+	c = &ctx->dcwb_hw[idx];
+	blk_base  = ctx->catalog->cwb_blk_stride * ((cur_idx - DCWB_0) % MAX_CWB_BLOCKSIZE);
 
 	if (enable) {
 		SDE_REG_WRITE(c, blk_base + CWB_CTRL_SRC_SEL, data_src - CWB_0);
@@ -407,6 +425,28 @@ static void sde_hw_wb_program_cwb_ctrl(struct sde_hw_wb *ctx,
 		SDE_REG_WRITE(c, blk_base + CWB_CTRL_SRC_SEL, 0xf);
 		SDE_REG_WRITE(c, blk_base + CWB_CTRL_MODE, 0x0);
 	}
+}
+
+static void sde_hw_wb_setup_sys_cache(struct sde_hw_wb *ctx, struct sde_hw_wb_sc_cfg *cfg)
+{
+	u32 val = 0;
+
+	if (!ctx || !cfg)
+		return;
+
+	if (cfg->flags & SYS_CACHE_EN_FLAG)
+		val |= (cfg->wr_en ? BIT(15) : 0);
+
+	if (cfg->flags & SYS_CACHE_SCID)
+		val |= ((cfg->wr_scid & 0x1f) << 8);
+
+	if (cfg->flags & SYS_CACHE_OP_TYPE)
+		val |= ((cfg->wr_op_type & 0xf) << 0);
+
+	if (cfg->flags & SYS_CACHE_NO_ALLOC)
+		val |= ((cfg->wr_noallocate & 0x1) << 4);
+
+	SDE_REG_WRITE(&ctx->hw, WB_SYS_CACHE_MODE, val);
 }
 
 static void sde_hw_wb_program_cwb_dither_ctrl(struct sde_hw_wb *ctx,
@@ -506,7 +546,10 @@ static bool sde_hw_wb_setup_clk_force_ctrl(struct sde_hw_blk_reg_map *hw,
 {
 	u32 reg_val, new_val;
 
-	if (!hw || !SDE_CLK_CTRL_WB_VALID(clk_ctrl))
+	if (!hw)
+		return false;
+
+	if (!SDE_CLK_CTRL_WB_VALID(clk_ctrl))
 		return false;
 
 	reg_val = SDE_REG_READ(hw, WB_CLK_CTRL);
@@ -523,7 +566,7 @@ static bool sde_hw_wb_setup_clk_force_ctrl(struct sde_hw_blk_reg_map *hw,
 }
 
 static int sde_hw_wb_get_clk_ctrl_status(struct sde_hw_blk_reg_map *hw,
-		enum sde_clk_ctrl_type clk_ctrl)
+		enum sde_clk_ctrl_type clk_ctrl, bool *status)
 {
 	if (!hw)
 		return -EINVAL;
@@ -531,7 +574,45 @@ static int sde_hw_wb_get_clk_ctrl_status(struct sde_hw_blk_reg_map *hw,
 	if (!SDE_CLK_CTRL_WB_VALID(clk_ctrl))
 		return -EINVAL;
 
-	return SDE_REG_READ(hw, WB_CLK_STATUS) & BIT(0);
+	*status = SDE_REG_READ(hw, WB_CLK_STATUS) & BIT(0);
+
+	return 0;
+}
+
+static u32 sde_hw_wb_get_line_count(struct sde_hw_wb *ctx)
+{
+	struct sde_hw_blk_reg_map *c;
+
+	c = &ctx->hw;
+
+	return SDE_REG_READ(c, WB_LINE_COUNT) & 0xFFFF;
+}
+
+static void sde_hw_wb_set_prog_line_count(struct sde_hw_wb *ctx, u32 val)
+{
+	struct sde_hw_blk_reg_map *c;
+
+	c = &ctx->hw;
+
+	SDE_REG_WRITE(c, WB_PROG_LINE_COUNT, val);
+}
+
+static u32 sde_hw_wb_get_ubwc_error(struct sde_hw_wb *ctx)
+{
+	struct sde_hw_blk_reg_map *c;
+
+	c = &ctx->hw;
+
+	return SDE_REG_READ(c, WB_UBWC_ERROR_STATUS) & 0xFF;
+}
+
+static void sde_hw_wb_clear_ubwc_error(struct sde_hw_wb *ctx)
+{
+	struct sde_hw_blk_reg_map *c;
+
+	c = &ctx->hw;
+
+	return SDE_REG_WRITE(c, WB_UBWC_ERROR_STATUS, BIT(31));
 }
 
 static void _setup_wb_ops(struct sde_hw_wb_ops *ops,
@@ -539,15 +620,13 @@ static void _setup_wb_ops(struct sde_hw_wb_ops *ops,
 {
 	ops->setup_outaddress = sde_hw_wb_setup_outaddress;
 	ops->setup_outformat = sde_hw_wb_setup_format;
-
-	if (test_bit(SDE_WB_XY_ROI_OFFSET, &features))
-		ops->setup_roi = sde_hw_wb_roi;
+	ops->setup_qos_lut = sde_hw_wb_setup_qos_lut;
+	ops->setup_roi = sde_hw_wb_roi;
+	ops->get_ubwc_error = sde_hw_wb_get_ubwc_error;
+	ops->clear_ubwc_error = sde_hw_wb_clear_ubwc_error;
 
 	if (test_bit(SDE_WB_CROP, &features))
 		ops->setup_crop = sde_hw_wb_crop;
-
-	if (test_bit(SDE_WB_QOS, &features))
-		ops->setup_qos_lut = sde_hw_wb_setup_qos_lut;
 
 	if (test_bit(SDE_WB_CDP, &features))
 		ops->setup_cdp = sde_hw_wb_setup_cdp;
@@ -563,16 +642,19 @@ static void _setup_wb_ops(struct sde_hw_wb_ops *ops,
 		ops->bind_dcwb_pp_blk = sde_hw_wb_bind_dcwb_pp_blk;
 	}
 
+	if (test_bit(SDE_WB_SYS_CACHE, &features))
+		ops->setup_sys_cache = sde_hw_wb_setup_sys_cache;
+
 	if (test_bit(SDE_WB_CWB_DITHER_CTRL, &features))
 		ops->program_cwb_dither_ctrl = sde_hw_wb_program_cwb_dither_ctrl;
+
+	if (test_bit(SDE_WB_PROG_LINE, &features)) {
+		ops->get_line_count = sde_hw_wb_get_line_count;
+		ops->set_prog_line_count = sde_hw_wb_set_prog_line_count;
+	}
 }
 
-static struct sde_hw_blk_ops sde_hw_ops = {
-	.start = NULL,
-	.stop = NULL,
-};
-
-struct sde_hw_wb *sde_hw_wb_init(enum sde_wb idx,
+struct sde_hw_blk_reg_map *sde_hw_wb_init(enum sde_wb idx,
 		void __iomem *addr,
 		struct sde_mdss_cfg *m,
 		struct sde_hw_mdp *hw_mdp,
@@ -580,7 +662,6 @@ struct sde_hw_wb *sde_hw_wb_init(enum sde_wb idx,
 {
 	struct sde_hw_wb *c;
 	struct sde_wb_cfg *cfg;
-	int rc;
 
 	if (!addr || !m || !hw_mdp)
 		return ERR_PTR(-EINVAL);
@@ -604,13 +685,7 @@ struct sde_hw_wb *sde_hw_wb_init(enum sde_wb idx,
 	_setup_wb_ops(&c->ops, c->caps->features);
 	c->hw_mdp = hw_mdp;
 
-	rc = sde_hw_blk_init(&c->base, SDE_HW_BLK_WB, idx, &sde_hw_ops);
-	if (rc) {
-		SDE_ERROR("failed to init hw blk %d\n", rc);
-		goto blk_init_error;
-	}
-
-	if (m->has_vbif_clk_split) {
+	if (test_bit(SDE_FEATURE_VBIF_CLK_SPLIT, m->features)) {
 		if (SDE_CLK_CTRL_WB_VALID(cfg->clk_ctrl)) {
 			clk_client->hw = &c->hw;
 			clk_client->clk_ctrl = cfg->clk_ctrl;
@@ -628,21 +703,15 @@ struct sde_hw_wb *sde_hw_wb_init(enum sde_wb idx,
 		_sde_hw_cwb_ctrl_init(m, addr, &c->cwb_hw);
 
 	if (test_bit(SDE_WB_DCWB_CTRL, &cfg->features)) {
-		_sde_hw_dcwb_ctrl_init(m, addr, &c->dcwb_hw);
+		_sde_hw_dcwb_ctrl_init(m, addr, c);
 		_sde_hw_dcwb_pp_ctrl_init(m, addr, c);
 	}
 
-	return c;
-
-blk_init_error:
-	kfree(c);
-
-	return ERR_PTR(rc);
+	return &c->hw;
 }
 
-void sde_hw_wb_destroy(struct sde_hw_wb *hw_wb)
+void sde_hw_wb_destroy(struct sde_hw_blk_reg_map *hw)
 {
-	if (hw_wb)
-		sde_hw_blk_destroy(&hw_wb->base);
-	kfree(hw_wb);
+	if (hw)
+		kfree(to_sde_hw_wb(hw));
 }

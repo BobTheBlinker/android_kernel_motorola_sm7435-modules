@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/iopoll.h>
@@ -2126,9 +2126,9 @@ static int cam_ife_csid_ver1_enable_csi2(struct cam_ife_csid_ver1_hw *csid_hw)
 			csid_hw->hw_intf->hw_idx);
 		return rc;
 	}
-#ifndef CONFIG_CSID_ERROR_STATUS_CLEAR
+
 	csid_hw->flags.rx_enabled = true;
-#endif
+
 	if (csid_hw->res_type == CAM_ISP_IFE_IN_RES_TPG)
 		cam_ife_csid_ver1_init_tpg_hw(csid_hw);
 
@@ -2149,9 +2149,6 @@ static int cam_ife_csid_ver1_enable_csi2(struct cam_ife_csid_ver1_hw *csid_hw)
 	cam_io_w_mb(val, soc_info->reg_map[0].mem_base +
 		csi2_reg->irq_mask_addr);
 	cam_ife_csid_ver1_rx_capture_config(csid_hw);
-#ifdef CONFIG_CSID_ERROR_STATUS_CLEAR
-	csid_hw->flags.rx_enabled = true;
-#endif
 
 	return rc;
 }
@@ -2698,11 +2695,7 @@ static int cam_ife_csid_ver1_enable_hw(struct cam_ife_csid_ver1_hw *csid_hw)
 	if (csid_reg->cmn_reg->num_ppp)
 		cam_io_w_mb(csid_reg->cmn_reg->ppp_irq_mask_all,
 			soc_info->reg_map[0].mem_base +
-#ifdef CONFIG_CSID_ERROR_STATUS_CLEAR
-			csid_reg->ppp_reg->irq_clear_addr);
-#else
 			csid_reg->ipp_reg->irq_clear_addr);
-#endif
 
 	for (i = 0; i < csid_reg->cmn_reg->num_rdis; i++)
 		cam_io_w_mb(csid_reg->cmn_reg->rdi_irq_mask_all,
@@ -2728,6 +2721,7 @@ static int cam_ife_csid_ver1_enable_hw(struct cam_ife_csid_ver1_hw *csid_hw)
 	csid_hw->flags.fatal_err_detected = false;
 	csid_hw->flags.device_enabled = true;
 	spin_unlock_irqrestore(&csid_hw->lock_state, flags);
+	cam_tasklet_start(csid_hw->tasklet);
 
 	return rc;
 
@@ -2892,6 +2886,7 @@ static int cam_ife_csid_ver1_disable_hw(
 	cam_io_w_mb(0, soc_info->reg_map[0].mem_base +
 		csid_reg->cmn_reg->top_irq_mask_addr);
 
+	cam_tasklet_stop(csid_hw->tasklet);
 	rc = cam_ife_csid_disable_soc_resources(soc_info);
 	if (rc)
 		CAM_ERR(CAM_ISP, "CSID:%d Disable CSID SOC failed",
@@ -4305,26 +4300,12 @@ static int cam_ife_csid_ver1_rx_top_half(
 			csid_hw->hw_intf->hw_idx);
 		return 0;
 	}
-#ifdef CONFIG_CSID_ERROR_STATUS_CLEAR
-	if (csid_hw->flags.rx_enabled)
-	{
-		CAM_DBG(CAM_ISP, "CSID[%d] csid is enable? %d",
-			csid_hw->hw_intf->hw_idx, csid_hw->flags.device_enabled);
 
-        	if (status & csi2_reg->fatal_err_mask) {
-			csid_hw->flags.fatal_err_detected = true;
-			cam_ife_csid_ver1_disable_csi2(csid_hw);
-        	}
-	} else {
-        	status &= ~csi2_reg->fatal_err_mask;
-        	irq_status[CAM_IFE_CSID_IRQ_REG_RX] = status;
-	}
-#else
 	if (status & csi2_reg->fatal_err_mask) {
-        	csid_hw->flags.fatal_err_detected = true;
-        	cam_ife_csid_ver1_disable_csi2(csid_hw);
-        }
-#endif
+		csid_hw->flags.fatal_err_detected = true;
+		cam_ife_csid_ver1_disable_csi2(csid_hw);
+	}
+
 	if (status & csi2_reg->part_fatal_err_mask) {
 		if (status & IFE_CSID_VER1_RX_CPHY_SOT_RECEPTION)
 			csid_hw->counters.error_irq_count++;

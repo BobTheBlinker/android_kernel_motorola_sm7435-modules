@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/iopoll.h>
 #include "dsi_ctrl_hw.h"
@@ -21,18 +21,29 @@
 #define MDP_INTF_TEAR_LINE_COUNT_OFFSET 0x30
 #define MDP_INTF_LINE_COUNT_OFFSET 0xB0
 
-void dsi_ctrl_hw_22_setup_lane_map(struct dsi_ctrl_hw *ctrl,
+#define DSI_MDP_MISR_CTRL 0x364
+#define DSI_MDP_MISR_SIGNATURE 0x368
+
+void dsi_ctrl_hw_22_setup_lane_map(struct dsi_ctrl_hw *ctrl_hw,
 		       struct dsi_lane_map *lane_map)
 {
-	u32 reg_value = lane_map->lane_map_v2[DSI_LOGICAL_LANE_0] |
+	struct dsi_ctrl *ctrl = container_of(ctrl_hw, struct dsi_ctrl, hw);
+	u32 reg_value;
+
+	/* Lane swap is performed through PHY for controller version 2.2/PHY versions 3.0 and above */
+	if (ctrl->version >= DSI_CTRL_VERSION_2_2) {
+		DSI_CTRL_HW_DBG(ctrl_hw, "DSI controller version is >=2.2, lane swap is performed through PHY");
+		return;
+	}
+	reg_value = lane_map->lane_map_v2[DSI_LOGICAL_LANE_0] |
 			(lane_map->lane_map_v2[DSI_LOGICAL_LANE_1] << 4) |
 			(lane_map->lane_map_v2[DSI_LOGICAL_LANE_2] << 8) |
 			(lane_map->lane_map_v2[DSI_LOGICAL_LANE_3] << 12);
 
-	DSI_W32(ctrl, DSI_LANE_SWAP_CTRL, reg_value);
+	DSI_W32(ctrl_hw, DSI_LOGICAL_LANE_SWAP_CTRL, reg_value);
 
-	DSI_CTRL_HW_DBG(ctrl, "[DSI_%d] Lane swap setup complete\n",
-			ctrl->index);
+	DSI_CTRL_HW_DBG(ctrl_hw, "[DSI_%d] Lane swap setup complete\n",
+			ctrl_hw->index);
 }
 
 int dsi_ctrl_hw_22_wait_for_lane_idle(struct dsi_ctrl_hw *ctrl,
@@ -314,4 +325,36 @@ void dsi_ctrl_hw_22_configure_splitlink(struct dsi_ctrl_hw *ctrl,
 
 	/* Make sure the split link config is updated */
 	wmb();
+}
+
+void dsi_ctrl_hw_22_setup_misr(struct dsi_ctrl_hw *ctrl, enum dsi_op_mode panel_mode,
+			bool enable, u32 frame_count)
+{
+	u32 config = 0;
+
+	DSI_W32(ctrl, DSI_MDP_MISR_CTRL, config);
+	wmb(); /* clear misr data */
+
+	if (enable) {
+		config = (frame_count & 0xffff);
+		config |= BIT(8) | BIT(24) | BIT(31); /* enable, panel data-only, free run mode */
+	}
+
+	DSI_CTRL_HW_DBG(ctrl, "MISR enable:%d, frame_count:%d, config:0x%x\n",
+			enable, frame_count, config);
+	DSI_W32(ctrl, DSI_MDP_MISR_CTRL, config);
+	wmb(); /* make sure MISR is configured */
+}
+
+u32 dsi_ctrl_hw_22_collect_misr(struct dsi_ctrl_hw *ctrl, enum dsi_op_mode panel_mode)
+{
+	u32 enabled;
+	u32 misr = 0;
+
+	enabled = DSI_R32(ctrl, DSI_MDP_MISR_CTRL) & BIT(8);
+	if (enabled)
+		misr = DSI_R32(ctrl, DSI_MDP_MISR_SIGNATURE);
+
+	DSI_CTRL_HW_DBG(ctrl, "MISR enabled:%d value:0x%x\n", enabled, misr);
+	return misr;
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2020-2022, The Linux Foundation. All rights reserved.
  */
 
@@ -56,7 +56,8 @@
 #define DSC_CFG                    0x04
 #define DSC_DATA_IN_SWAP           0x08
 #define DSC_CLK_CTRL               0x0C
-
+#define DSC_4HS_MERGE_EN           0x10
+#define DSC_4HS_MERGE_CFG          0x14
 
 static int _dsc_calc_ob_max_addr(struct sde_hw_dsc *hw_dsc, int num_ss)
 {
@@ -125,6 +126,36 @@ static void sde_hw_dsc_disable(struct sde_hw_dsc *hw_dsc)
 	SDE_REG_WRITE(dsc_c, DSC_MAIN_CONF + idx, 0);
 }
 
+static void sde_hw_dsc_4hs_config(struct sde_hw_dsc *hw_dsc,
+		struct msm_display_dsc_info *dsc, u32 mode, u32 idx)
+{
+	struct sde_hw_blk_reg_map *dsc_c;
+	u32 data = 0, en = 0;
+
+	dsc_c = &hw_dsc->hw;
+
+	if (test_bit(SDE_DSC_4HS, &hw_dsc->caps->features)) {
+		if (dsc->dsc_4hsmerge_en) {
+			data = dsc->dsc_4hsmerge_alignment << 12;
+			data |= dsc->dsc_4hsmerge_padding << 8;
+			data |= ((mode & DSC_MODE_VIDEO) ? 1 : 0);
+			en = BIT(0);
+		}
+
+		SDE_REG_WRITE(dsc_c, DSC_4HS_MERGE_CFG + idx, data);
+		SDE_REG_WRITE(dsc_c, DSC_4HS_MERGE_EN + idx, en);
+	} else if (dsc->dsc_4hsmerge_en) {
+		data = SDE_REG_READ(dsc_c, DSC_CFG + idx);
+
+		data |= dsc->dsc_4hsmerge_padding << 18;
+		data |= dsc->dsc_4hsmerge_alignment << 22;
+		data |= ((mode & DSC_MODE_VIDEO) ? 1 : 0) << 17;
+		data |= BIT(16);
+
+		SDE_REG_WRITE(dsc_c, DSC_CFG + idx, data);
+	}
+}
+
 static void sde_hw_dsc_config(struct sde_hw_dsc *hw_dsc,
 		struct msm_display_dsc_info *dsc, u32 mode,
 		bool ich_reset_override)
@@ -156,6 +187,10 @@ static void sde_hw_dsc_config(struct sde_hw_dsc *hw_dsc,
 	if (ich_reset_override)
 		data |= 0xC00; // set bit 10 and 11
 	data |= (_dsc_calc_ob_max_addr(hw_dsc, dsc->num_active_ss_per_enc) << 18);
+
+	if (test_bit(SDE_DSC_FULL_ICH_PREC, &hw_dsc->caps->features) &&
+			dsc->config.bits_per_component > 8)
+		data |= BIT(12);
 
 	SDE_REG_WRITE(dsc_c, ENC_DF_CTRL + idx, data);
 
@@ -261,15 +296,12 @@ static void sde_hw_dsc_config(struct sde_hw_dsc *hw_dsc,
 		data |= BIT(12);
 	if (mode & DSC_MODE_MULTIPLEX)
 		data |= BIT(13);
-	if (!(mode & DSC_MODE_VIDEO))
-		data |= BIT(17);
-	if (dsc->dsc_4hsmerge_en) {
-		data |= dsc->dsc_4hsmerge_padding << 18;
-		data |= dsc->dsc_4hsmerge_alignment << 22;
-		data |= BIT(16);
-	}
 
 	SDE_REG_WRITE(dsc_c, DSC_CFG + idx, data);
+
+	wmb(); /* ensure the register is committed */
+
+	sde_hw_dsc_4hs_config(hw_dsc, dsc, mode, idx);
 }
 
 static void sde_hw_dsc_config_thresh(struct sde_hw_dsc *hw_dsc,

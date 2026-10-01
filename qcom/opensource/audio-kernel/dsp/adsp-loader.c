@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2014, 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/init.h>
@@ -38,7 +38,7 @@ static ssize_t adsp_boot_store(struct kobject *kobj,
 	struct kobj_attribute *attr,
 	const char *buf, size_t count);
 
-ssize_t adsp_ssr_store(struct kobject *kobj,
+static ssize_t adsp_ssr_store(struct kobject *kobj,
 	struct kobj_attribute *attr,
 	const char *buf, size_t count);
 
@@ -176,7 +176,7 @@ static void adsp_loader_do(struct platform_device *pdev)
 	schedule_work(&adsp_ldr_work);
 }
 
-ssize_t adsp_ssr_store(struct kobject *kobj,
+static ssize_t adsp_ssr_store(struct kobject *kobj,
 	struct kobj_attribute *attr,
 	const char *buf,
 	size_t count)
@@ -210,7 +210,7 @@ ssize_t adsp_ssr_store(struct kobject *kobj,
 	dev_dbg(&pdev->dev, "%s :: ADSP restarted\n", __func__);
 	return count;
 }
-EXPORT_SYMBOL(adsp_ssr_store);
+
 static ssize_t adsp_boot_store(struct kobject *kobj,
 	struct kobj_attribute *attr,
 	const char *buf,
@@ -418,7 +418,7 @@ static int adsp_loader_probe(struct platform_device *pdev)
 		goto wqueue;
 	}
 	if (len <= 0 || len > sizeof(u32)) {
-		dev_dbg(&pdev->dev, "%s: nvmem cell length out of range: %d\n",
+		dev_dbg(&pdev->dev, "%s: nvmem cell length out of range: %lu\n",
 			__func__, len);
 		kfree(buf);
 		goto wqueue;

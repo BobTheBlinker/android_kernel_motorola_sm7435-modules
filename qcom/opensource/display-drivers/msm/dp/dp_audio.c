@@ -1,12 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
+ * Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/of_platform.h>
+#include <linux/version.h>
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+#include <msm_ext_display.h>
+#else
 #include <linux/soc/qcom/msm_ext_display.h>
+#endif
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+#include <drm/display/drm_dp_helper.h>
+#else
 #include <drm/drm_dp_helper.h>
+#endif
 
 #include "dp_catalog.h"
 #include "dp_audio.h"
@@ -356,7 +366,9 @@ static void dp_audio_enable(struct dp_audio_private *audio, bool enable)
 		return;
 	}
 	catalog->data = enable;
-	catalog->enable(catalog);
+
+	if (audio->panel->get_panel_on(audio->panel))
+		catalog->enable(catalog);
 
 }
 
@@ -618,7 +630,7 @@ static int dp_audio_register_ext_disp(struct dp_audio_private *audio)
 		rc = -ENODEV;
 		goto end;
 	}
-#if defined(CONFIG_MSM_EXT_DISPLAY)
+#if IS_ENABLED(CONFIG_MSM_EXT_DISPLAY)
 	rc = msm_ext_disp_register_intf(audio->ext_pdev, ext);
 	if (rc)
 		DP_ERR("failed to register disp\n");
@@ -659,7 +671,7 @@ static int dp_audio_deregister_ext_disp(struct dp_audio_private *audio)
 		goto end;
 	}
 
-#if defined(CONFIG_MSM_EXT_DISPLAY)
+#if IS_ENABLED(CONFIG_MSM_EXT_DISPLAY)
 	rc = msm_ext_disp_deregister_intf(audio->ext_pdev, ext);
 	if (rc)
 		DP_ERR("failed to deregister disp\n");
@@ -769,7 +781,7 @@ end:
 	return rc;
 }
 
-static int dp_audio_off(struct dp_audio *dp_audio)
+static int dp_audio_off(struct dp_audio *dp_audio, bool skip_wait)
 {
 	int rc = 0;
 	struct dp_audio_private *audio;
@@ -794,9 +806,11 @@ static int dp_audio_off(struct dp_audio *dp_audio)
 	if (work_pending)
 		DP_DEBUG("pending notification work completed\n");
 
-	rc = dp_audio_notify(audio, EXT_DISPLAY_CABLE_DISCONNECT);
-	if (rc)
-		goto end;
+	if (!skip_wait) {
+		rc = dp_audio_notify(audio, EXT_DISPLAY_CABLE_DISCONNECT);
+		if (rc)
+			goto end;
+	}
 
 	DP_DEBUG("success\n");
 end:

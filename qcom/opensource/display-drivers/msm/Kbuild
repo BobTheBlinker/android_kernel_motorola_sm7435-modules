@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-KDIR := $(TOP)/kernel_platform/common
+KDIR := $(TOP)/kernel_platform/msm-kernel
 
 ifeq ($(CONFIG_ARCH_WAIPIO), y)
 ifeq ($(CONFIG_ARCH_QTI_VM), y)
@@ -13,20 +13,19 @@ endif
 endif
 
 ifeq ($(CONFIG_ARCH_NEO), y)
-ifeq ($(CONFIG_TARGET), neo_le)
-	include $(DISPLAY_ROOT)/config/gki_neoledisp.conf
-	LINUX_INC +=	-include $(DISPLAY_ROOT)/config/gki_neoledispconf.h
-endif
-ifeq ($(CONFIG_TARGET), neo_la)
 	include $(DISPLAY_ROOT)/config/gki_neodisp.conf
 	LINUX_INC +=	-include $(DISPLAY_ROOT)/config/gki_neodispconf.h
 endif
+
+ifeq ($(CONFIG_ARCH_BLAIR), y)
+	include $(DISPLAY_ROOT)/config/gki_blairdisp.conf
+	LINUX_INC +=	-include $(DISPLAY_ROOT)/config/gki_blairdispconf.h
 endif
 
 ifeq ($(CONFIG_ARCH_PARROT), y)
 ifeq ($(CONFIG_ARCH_QTI_VM), y)
-	include $(DISPLAY_ROOT)/config/gki_waipiodisptui.conf
-	LINUX_INC +=	-include $(DISPLAY_ROOT)/config/gki_waipiodisptuiconf.h
+	include $(DISPLAY_ROOT)/config/gki_parrotdisptui.conf
+        LINUX_INC += -include $(DISPLAY_ROOT)/config/gki_parrotdisptuiconf.h
 else
 	include $(DISPLAY_ROOT)/config/gki_parrotdisp.conf
 	LINUX_INC +=	-include $(DISPLAY_ROOT)/config/gki_parrotdispconf.h
@@ -35,21 +34,42 @@ endif
 
 ifeq ($(CONFIG_ARCH_RAVELIN), y)
 ifeq ($(CONFIG_ARCH_QTI_VM), y)
-	include $(DISPLAY_ROOT)/config/gki_waipiodisptui.conf
-	LINUX_INC +=	-include $(DISPLAY_ROOT)/config/gki_waipiodisptuiconf.h
+    include $(DISPLAY_ROOT)/config/gki_ravelindisptui.conf
+    LINUX_INC += -include $(DISPLAY_ROOT)/config/gki_ravelindisptuiconf.h
 else
 	include $(DISPLAY_ROOT)/config/gki_ravelindisp.conf
 	LINUX_INC +=	-include $(DISPLAY_ROOT)/config/gki_ravelindispconf.h
 endif
 endif
 
-ifeq ($(CONFIG_ARCH_ANORAK), y)
-	include $(DISPLAY_ROOT)/config/gki_anorakdisp.conf
-	LINUX_INC +=	-include $(DISPLAY_ROOT)/config/gki_anorakdispconf.h
+
+ifeq ($(CONFIG_ARCH_PINEAPPLE), y)
+ifeq ($(CONFIG_ARCH_QTI_VM), y)
+    include $(DISPLAY_ROOT)/config/gki_pineappledisptui.conf
+    LINUX_INC += -include $(DISPLAY_ROOT)/config/gki_pineappledisptuiconf.h
+else
+	include $(DISPLAY_ROOT)/config/gki_pineappledisp.conf
+	LINUX_INC += -include $(DISPLAY_ROOT)/config/gki_pineappledispconf.h
+endif
 endif
 
-LINUX_INC +=	-Iinclude/linux \
-		-Iinclude/linux/drm
+ifeq ($(CONFIG_ARCH_KALAMA), y)
+ifeq ($(CONFIG_ARCH_QTI_VM), y)
+        include $(DISPLAY_ROOT)/config/gki_kalamadisptui.conf
+        LINUX_INC += -include $(DISPLAY_ROOT)/config/gki_kalamadisptuiconf.h
+else
+	include $(DISPLAY_ROOT)/config/gki_kalamadisp.conf
+	LINUX_INC += -include $(DISPLAY_ROOT)/config/gki_kalamadispconf.h
+endif
+endif
+
+ifeq (y, $(findstring y, $(CONFIG_ARCH_SA8155) $(CONFIG_ARCH_SA6155) $(CONFIG_ARCH_SA8195)))
+	include $(DISPLAY_ROOT)/config/augen3disp.conf
+	LINUX_INC += -include $(DISPLAY_ROOT)/config/augen3dispconf.h
+endif
+
+LINUX_INC +=	-I$(KERNEL_SRC)/include/linux \
+		-I$(KERNEL_SRC)/include/linux/drm
 
 LINUX_INC +=	-I$(DISPLAY_ROOT) \
 	-I$(DISPLAY_ROOT)/include \
@@ -61,6 +81,12 @@ LINUX_INC +=	-I$(DISPLAY_ROOT) \
 	-I$(DISPLAY_ROOT)/msm/dp \
 	-I$(DISPLAY_ROOT)/msm/dsi \
 	-I$(DISPLAY_ROOT)/msm/sde \
+	-I$(DISPLAY_ROOT)/../mm-drivers/hw_fence/include \
+	-I$(DISPLAY_ROOT)/../mm-drivers/msm_ext_display/include \
+	-I$(DISPLAY_ROOT)/../mm-drivers/sync_fence/include \
+	-I$(DISPLAY_ROOT)/../securemsm-kernel \
+	-I$(DISPLAY_ROOT)/../synx-kernel/include/uapi/synx/media \
+	-I$(DISPLAY_ROOT)/../synx-kernel/msm/synx \
 	-I$(DISPLAY_ROOT)/include/uapi/display \
 
 CDEFINES +=	-DANI_LITTLE_BYTE_ENDIAN \
@@ -81,12 +107,12 @@ ifeq ($(call cc-option-yn, -Wmaybe-uninitialized),y)
 EXTRA_CFLAGS += -Wmaybe-uninitialized
 endif
 
-KBUILD_EXTRA_SYMBOLS +=$(OUT)/obj/sm7435-modules/qcom/opensource/display-drivers/hdcp/Module.symvers
-KBUILD_EXTRA_SYMBOLS +=$(OUT)/obj/sm7435-modules/qcom/opensource/display-drivers/msm/Module.symvers
-
 ifeq ($(call cc-option-yn, -Wheader-guard),y)
 EXTRA_CFLAGS += -Wheader-guard
 endif
+
+ccflags-y += -Wformat-extra-args -Wstrict-prototypes -Wformat-insufficient-args \
+		-Wformat-invalid-specifier -Wformat-zero-length -Wnonnull
 
 ifneq ($(MODNAME), qdsp6v2)
 CHIP_NAME ?= $(MODNAME)
@@ -96,7 +122,10 @@ endif
 ######### CONFIG_DRM_MSM ########
 obj-m += msm_drm.o
 
-msm_drm-$(CONFIG_HDCP_QSEECOM) := ../hdcp/msm_hdcp.o
+msm_drm-$(CONFIG_HDCP_QSEECOM) := ../hdcp/msm_hdcp.o \
+				  dp/dp_hdcp2p2.o \
+				  sde_hdcp_1x.o \
+				  sde_hdcp_2x.o
 
 msm_drm-$(CONFIG_MSM_SDE_ROTATOR) += ../rotator/sde_rotator_dev.o \
 				     ../rotator/sde_rotator_dev.o \
@@ -112,16 +141,18 @@ msm_drm-$(CONFIG_MSM_SDE_ROTATOR) += ../rotator/sde_rotator_dev.o \
 				     ../rotator/sde_rotator_r1.o \
 				     ../rotator/sde_rotator_r3.o
 
+ifeq ($(CONFIG_MSM_SDE_ROTATOR), y)
 msm_drm-$(CONFIG_SYNC_FILE) += ../rotator/sde_rotator_sync.o
+
+msm_drm-$(CONFIG_DEBUG_FS) += ../rotator/sde_rotator_debug.o \
+			      ../rotator/sde_rotator_r1_debug.o \
+			      ../rotator/sde_rotator_r3_debug.o
+endif
 
 msm_drm-$(CONFIG_DRM_SDE_VM) += sde/sde_vm_common.o \
 				sde/sde_vm_primary.o \
 				sde/sde_vm_trusted.o \
 				sde/sde_vm_msgq.o
-
-msm_drm-$(CONFIG_DEBUG_FS) += ../rotator/sde_rotator_debug.o \
-			      ../rotator/sde_rotator_r1_debug.o \
-			      ../rotator/sde_rotator_r3_debug.o
 
 msm_drm-$(CONFIG_DRM_MSM_DP) += dp/dp_altmode.o \
 				dp/dp_parser.o \
@@ -144,9 +175,6 @@ msm_drm-$(CONFIG_DRM_MSM_DP) += dp/dp_altmode.o \
 				dp/dp_lphw_hpd.o \
 				dp/dp_display.o \
 				dp/dp_drm.o \
-				dp/dp_hdcp2p2.o \
-				sde_hdcp_1x.o \
-				sde_hdcp_2x.o \
 				dp/dp_pll.o \
 				dp/dp_pll_5nm.o \
 				dp/dp_pll_4nm.o
@@ -164,7 +192,6 @@ msm_drm-$(CONFIG_DRM_MSM_SDE) += sde/sde_crtc.o \
 				 sde/sde_core_perf.o \
 				 sde/sde_rm.o \
 				 sde/sde_kms_utils.o \
-				 sde/sde_motUtil.o \
 				 sde/sde_kms.o \
 				 sde/sde_plane.o \
 				 sde/sde_connector.o \
@@ -192,7 +219,6 @@ msm_drm-$(CONFIG_DRM_MSM_SDE) += sde/sde_crtc.o \
 				 sde/sde_hw_top.o \
 				 sde/sde_hw_interrupts.o \
 				 sde/sde_hw_vbif.o \
-				 sde/sde_hw_blk.o \
 				 sde/sde_formats.o \
 				 sde_power_handle.o \
 				 sde/sde_hw_color_processing_v1_7.o \
@@ -206,6 +232,7 @@ msm_drm-$(CONFIG_DRM_MSM_SDE) += sde/sde_crtc.o \
 				 sde/sde_hw_qdss.o \
 				 sde_dsc_helper.o \
 				 sde_vdc_helper.o \
+				 sde/sde_hw_dnsc_blur.o \
 				 sde/sde_hw_rc.o
 
 msm_drm-$(CONFIG_DRM_SDE_WB) += sde/sde_wb.o \
@@ -220,11 +247,14 @@ msm_drm-$(CONFIG_DRM_MSM_DSI) += dsi/dsi_phy.o \
 				 dsi/dsi_phy.o \
 				 dsi/dsi_phy_hw_v3_0.o \
 				 dsi/dsi_phy_hw_v4_0.o \
+				 dsi/dsi_phy_hw_v5_0.o \
 				 dsi/dsi_phy_timing_calc.o \
 				 dsi/dsi_phy_timing_v3_0.o \
 				 dsi/dsi_phy_timing_v4_0.o \
 				 dsi/dsi_pll.o \
 				 dsi/dsi_pll_5nm.o \
+				 dsi/dsi_pll_4nm.o \
+				 dsi/dsi_pll_10nm.o \
 				 dsi/dsi_ctrl_hw_cmn.o \
 				 dsi/dsi_ctrl_hw_2_2.o \
 				 dsi/dsi_ctrl.o \
@@ -233,8 +263,7 @@ msm_drm-$(CONFIG_DRM_MSM_DSI) += dsi/dsi_phy.o \
 				 dsi/dsi_display.o \
 				 dsi/dsi_panel.o \
 				 dsi/dsi_clk_manager.o \
-				 dsi/dsi_display_test.o \
-				 dsi/dsi_display_mot_ext.o
+				 dsi/dsi_display_test.o
 
 msm_drm-$(CONFIG_DSI_PARSER) += dsi/dsi_parser.o
 
@@ -242,10 +271,10 @@ msm_drm-$(CONFIG_THERMAL_OF) += msm_cooling_device.o
 
 msm_drm-$(CONFIG_DRM_MSM) += msm_atomic.o \
 			     msm_fb.o \
-			     msm_iommu.o \
 			     msm_drv.o \
 			     msm_gem.o \
 			     msm_gem_prime.o \
 			     msm_gem_vma.o \
 			     msm_smmu.o \
 			     msm_prop.o
+

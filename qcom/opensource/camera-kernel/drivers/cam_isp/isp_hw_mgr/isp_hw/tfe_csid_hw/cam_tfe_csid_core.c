@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022,2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/iopoll.h>
@@ -649,13 +649,14 @@ static int cam_tfe_csid_cid_reserve(struct cam_tfe_csid_hw *csid_hw,
 	const struct cam_tfe_csid_reg_offset       *csid_reg;
 
 	CAM_DBG(CAM_ISP,
-		"CSID:%d res_id:0x%x Lane type:%d lane_num:%d dt:%d vc:%d",
+		"CSID:%d res_id:0x%x Lane type:%d lane_num:%d dt:%d vc:%d, is_EPD: %d",
 		csid_hw->hw_intf->hw_idx,
 		cid_reserv->in_port->res_id,
 		cid_reserv->in_port->lane_type,
 		cid_reserv->in_port->lane_num,
 		cid_reserv->in_port->dt[0],
-		cid_reserv->in_port->vc[0]);
+		cid_reserv->in_port->vc[0],
+		cid_reserv->in_port->epd_supported);
 
 	if (cid_reserv->in_port->res_id >= CAM_ISP_TFE_IN_RES_MAX) {
 		CAM_ERR(CAM_ISP, "CSID:%d  Invalid phy sel %d",
@@ -753,6 +754,8 @@ static int cam_tfe_csid_cid_reserve(struct cam_tfe_csid_hw *csid_hw,
 			cid_reserv->in_port->lane_type;
 		csid_hw->csi2_rx_cfg.lane_num =
 			cid_reserv->in_port->lane_num;
+		if (cid_reserv->in_port->epd_supported)
+			csid_hw->csi2_rx_cfg.epd_supported = 1;
 
 		switch (cid_reserv->in_port->res_id) {
 		case CAM_ISP_TFE_IN_RES_TPG:
@@ -1032,6 +1035,9 @@ static int cam_tfe_csid_enable_csi2(
 		TFE_CSID_CSI2_RX_ERROR_UNBOUNDED_FRAME |
 		TFE_CSID_CSI2_RX_ERROR_CPHY_PH_CRC;
 
+	if (csid_hw->csi2_rx_cfg.epd_supported)
+		val &= ~TFE_CSID_CSI2_RX_ERROR_CPHY_EOT_RECEPTION;
+
 	/* Enable the interrupt based on csid debug info set */
 	if (csid_hw->csid_debug & TFE_CSID_DEBUG_ENABLE_SOT_IRQ)
 		val |= TFE_CSID_CSI2_RX_INFO_PHY_DL0_SOT_CAPTURED |
@@ -1206,6 +1212,7 @@ static int cam_tfe_csid_enable_hw(struct cam_tfe_csid_hw  *csid_hw)
 	csid_hw->fatal_err_detected = false;
 	csid_hw->device_enabled = 1;
 	spin_unlock_irqrestore(&csid_hw->spin_lock, flags);
+	cam_tasklet_start(csid_hw->tasklet);
 
 	if (csid_hw->pxl_pipe_enable ) {
 		path_data = (struct cam_tfe_csid_path_cfg  *)
@@ -1218,6 +1225,7 @@ static int cam_tfe_csid_enable_hw(struct cam_tfe_csid_hw  *csid_hw)
 			csid_hw->rdi_res[i].res_priv;
 		path_data->res_sof_cnt = 0;
 	}
+
 
 	return rc;
 
@@ -1266,6 +1274,8 @@ static int cam_tfe_csid_disable_hw(struct cam_tfe_csid_hw *csid_hw)
 	/* Disable the top IRQ interrupt */
 	cam_io_w_mb(0, soc_info->reg_map[0].mem_base +
 		csid_reg->cmn_reg->csid_top_irq_mask_addr);
+
+	cam_tasklet_stop(csid_hw->tasklet);
 
 	rc = cam_tfe_csid_disable_soc_resources(soc_info);
 	if (rc)
@@ -3516,8 +3526,23 @@ irqreturn_t cam_tfe_csid_irq(int irq_num, void *data)
 		}
 
 		if (irq_status[TFE_CSID_IRQ_REG_RX] &
-			TFE_CSID_CSI2_RX_ERROR_CPHY_EOT_RECEPTION)
-			csid_hw->error_irq_count++;
+			TFE_CSID_CSI2_RX_ERROR_CPHY_EOT_RECEPTION) {
+			if (csid_hw->csi2_rx_cfg.epd_supported) {
+				/*
+				 * Add a check to avoid printing EOT error status when
+				 * csid irqs are enabled for debug purpose.
+				 */
+				if (!(csid_hw->csid_debug))
+					CAM_ERR_RATE_LIMIT(CAM_ISP,
+						"CSID[%u] Rcvd Only ERROR_EOT for EPD sensor PHY \
+						 type: %s(%u)",
+						csid_hw->hw_intf->hw_idx,
+						(csid_hw->csi2_rx_cfg.lane_type) ? "cphy" : "dphy",
+						csid_hw->csi2_rx_cfg.lane_type);
+			}
+			else
+				csid_hw->error_irq_count++;
+		}
 
 		if (irq_status[TFE_CSID_IRQ_REG_RX] &
 			TFE_CSID_CSI2_RX_ERROR_CPHY_SOT_RECEPTION)

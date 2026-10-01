@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -21,6 +21,8 @@
  */
 #define MAX_BLOCKS    12
 #define MAX_REG_SIZE_ENTRIES 14
+#define MAX_CWB_BLOCKS    2
+#define MAX_CWB_BLOCKSIZE    2
 
 #define SDE_HW_VER(MAJOR, MINOR, STEP) ((u32)((MAJOR & 0xF) << 28)    |\
 		((MINOR & 0xFFF) << 16)  |\
@@ -47,14 +49,16 @@
 #define SDE_HW_VER_650	SDE_HW_VER(6, 5, 0) /* scuba */
 #define SDE_HW_VER_660	SDE_HW_VER(6, 6, 0) /* holi */
 #define SDE_HW_VER_670	SDE_HW_VER(6, 7, 0) /* shima */
+#define SDE_HW_VER_690	SDE_HW_VER(6, 9, 0) /* blair */
 #define SDE_HW_VER_700	SDE_HW_VER(7, 0, 0) /* lahaina */
 #define SDE_HW_VER_720	SDE_HW_VER(7, 2, 0) /* yupik */
 #define SDE_HW_VER_810	SDE_HW_VER(8, 1, 0) /* waipio */
 #define SDE_HW_VER_820	SDE_HW_VER(8, 2, 0) /* diwali */
 #define SDE_HW_VER_830	SDE_HW_VER(8, 3, 0) /* parrot */
 #define SDE_HW_VER_850	SDE_HW_VER(8, 5, 0) /* cape */
-#define SDE_HW_VER_860	SDE_HW_VER(8, 6, 0) /* ravelin */
-#define SDE_HW_VER_910	SDE_HW_VER(9, 1, 0) /* neo */
+#define SDE_HW_VER_860  SDE_HW_VER(8, 6, 0) /* ravelin */
+#define SDE_HW_VER_900	SDE_HW_VER(9, 0, 0) /* kalama */
+#define SDE_HW_VER_A00	SDE_HW_VER(10, 0, 0) /* pineapple */
 
 /* Avoid using below IS_XXX macros outside catalog, use feature bit instead */
 #define IS_SDE_MAJOR_SAME(rev1, rev2)   \
@@ -78,6 +82,7 @@
 #define IS_SCUBA_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_650)
 #define IS_HOLI_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_660)
 #define IS_SHIMA_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_670)
+#define IS_BLAIR_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_690)
 #define IS_LAHAINA_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_700)
 #define IS_YUPIK_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_720)
 #define IS_WAIPIO_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_810)
@@ -85,7 +90,8 @@
 #define IS_PARROT_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_830)
 #define IS_CAPE_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_850)
 #define IS_RAVELIN_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_860)
-#define IS_NEO_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_910)
+#define IS_KALAMA_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_900)
+#define IS_PINEAPPLE_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_A00)
 
 #define SDE_HW_BLK_NAME_LEN	16
 
@@ -107,6 +113,10 @@
 
 #define IS_SDE_CP_VER_1_0(version) \
 	(version == SDE_COLOR_PROCESS_VER(0x1, 0x0))
+
+#define SDE_SID_VERSION_2_0_0       0x200
+#define IS_SDE_SID_REV_200(rev) \
+	((rev) == SDE_SID_VERSION_2_0_0)
 
 #define MAX_XIN_COUNT 16
 #define SSPP_SUBBLK_COUNT_MAX 2
@@ -137,6 +147,17 @@
 #define IS_SDE_INLINE_ROT_REV_201(rev) \
 	((rev) == SDE_INLINE_ROT_VERSION_2_0_1)
 
+/**
+ * Downscale Blur supported versions
+ */
+#define SDE_DNSC_BLUR_VERSION_1_0_0	0x100
+
+#define IS_SDE_DNSC_BLUR_REV_100(rev) \
+	((rev) == SDE_DNSC_BLUR_VERSION_1_0_0)
+
+#define DNSC_BLUR_MAX_RATIO_COUNT	7
+
+#define MDP_PPB_FIFO_ENTRY_SIZE                4
 
 /*
  * UIDLE supported versions
@@ -144,6 +165,8 @@
 #define SDE_UIDLE_VERSION_1_0_0		0x100
 #define SDE_UIDLE_VERSION_1_0_1		0x101
 #define SDE_UIDLE_VERSION_1_0_2		0x102
+#define SDE_UIDLE_VERSION_1_0_3		0x103
+#define SDE_UIDLE_VERSION_1_0_4		0x104
 
 #define IS_SDE_UIDLE_REV_100(rev) \
 	((rev) == SDE_UIDLE_VERSION_1_0_0)
@@ -151,6 +174,10 @@
 	((rev) == SDE_UIDLE_VERSION_1_0_1)
 #define IS_SDE_UIDLE_REV_102(rev) \
 	((rev) == SDE_UIDLE_VERSION_1_0_2)
+#define IS_SDE_UIDLE_REV_103(rev) \
+	((rev) == SDE_UIDLE_VERSION_1_0_3)
+#define IS_SDE_UIDLE_REV_104(rev) \
+	((rev) == SDE_UIDLE_VERSION_1_0_4)
 
 #define SDE_UIDLE_MAJOR(rev)		((rev) >> 8)
 
@@ -174,35 +201,35 @@ enum {
 #define IS_UBWC_30_SUPPORTED(rev) \
 		IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_UBWC_VER_30)
 #define IS_UBWC_40_SUPPORTED(rev) \
-		IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_UBWC_VER_40)
+		IS_SDE_MAJOR_SAME((rev), SDE_HW_UBWC_VER_40)
 #define IS_UBWC_43_SUPPORTED(rev) \
 		IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_UBWC_VER_43)
 
 /**
- * Supported SSPP system cache settings
+ * Supported system cache settings
  */
-#define SSPP_SYS_CACHE_EN_FLAG	BIT(0)
-#define SSPP_SYS_CACHE_SCID		BIT(1)
-#define SSPP_SYS_CACHE_OP_MODE	BIT(2)
-#define SSPP_SYS_CACHE_OP_TYPE	BIT(3)
-#define SSPP_SYS_CACHE_NO_ALLOC	BIT(4)
+#define SYS_CACHE_EN_FLAG	BIT(0)
+#define SYS_CACHE_SCID		BIT(1)
+#define SYS_CACHE_OP_MODE	BIT(2)
+#define SYS_CACHE_OP_TYPE	BIT(3)
+#define SYS_CACHE_NO_ALLOC	BIT(4)
 
-enum sde_sys_cache_op_type {
-	SDE_SYS_CACHE_NORMAL_READ = 0,
-	SDE_SYS_CACHE_READ_INVALIDATE = 2,
-	SDE_SYS_CACHE_READ_EVICT = 3
-};
+/* default line padding ratio limitation */
+#define MAX_VPADDING_RATIO_M	93
+#define MAX_VPADDING_RATIO_N	45
 
 /**
  * sde_sys_cache_type: Types of system cache supported
- * SDE_SYS_CACHE_DISP: Static img system cache
- * SDE_SYS_CACHE_MAX:  Maximum number of sys cache users
- * SDE_SYS_CACHE_NONE: Sys cache not used
+ * SDE_SYS_CACHE_DISP: System cache for static display read/write path use case
+ * SDE_SYS_CACHE_DISP_1: System cache for static display write path use case
+ * SDE_SYS_CACHE_DISP_WB: System cache for IWE use case
+ * SDE_SYS_CACHE_MAX:  Maximum number of system cache users
+ * SDE_SYS_CACHE_NONE: System cache not used
  */
 enum sde_sys_cache_type {
 	SDE_SYS_CACHE_DISP,
-	SDE_SYS_CACHE_DISP_LEFT,
-	SDE_SYS_CACHE_DISP_RIGHT,
+	SDE_SYS_CACHE_DISP_1,
+	SDE_SYS_CACHE_DISP_WB,
 	SDE_SYS_CACHE_MAX,
 	SDE_SYS_CACHE_NONE = SDE_SYS_CACHE_MAX
 };
@@ -217,6 +244,7 @@ enum sde_intr_hwblk_type {
 	SDE_INTR_HWBLK_AD4,
 	SDE_INTR_HWBLK_INTF_TEAR,
 	SDE_INTR_HWBLK_LTM,
+	SDE_INTR_HWBLK_WB,
 	SDE_INTR_HWBLK_MAX
 };
 
@@ -246,10 +274,10 @@ struct sde_intr_irq_offsets {
  * @SDE_MDP_WD_TIMER      WD timer support
  * @SDE_MDP_DHDR_MEMPOOL   Dynamic HDR Metadata mempool present
  * @SDE_MDP_DHDR_MEMPOOL_4K Dynamic HDR mempool is 4k aligned
- * @SDE_MDP_LLCC_DISP_LR   Separate SCID for left and right display
  * @SDE_MDP_PERIPH_TOP_REMOVED Indicates if periph top0 block is removed
+ * @SDE_MDP_TOP_PPB_SET_SIZE   Indicates if top block supports ppb size setting
+ * @SDE_MDP_HW_FENCE_DIR_WRITE Indicates if hw supports hw-fence dir write
  * @SDE_MDP_MAX            Maximum value
-
  */
 enum {
 	SDE_MDP_PANIC_PER_PIPE = 0x1,
@@ -262,7 +290,8 @@ enum {
 	SDE_MDP_DHDR_MEMPOOL,
 	SDE_MDP_DHDR_MEMPOOL_4K,
 	SDE_MDP_PERIPH_TOP_0_REMOVED,
-	SDE_MDP_LLCC_DISP_LR,
+	SDE_MDP_TOP_PPB_SET_SIZE,
+	SDE_MDP_HW_FENCE_DIR_WRITE,
 	SDE_MDP_MAX
 };
 
@@ -271,13 +300,11 @@ enum {
  * @SDE_SSPP_SRC             Src and fetch part of the pipes,
  * @SDE_SSPP_SCALER_QSEED2,  QSEED2 algorithm support
  * @SDE_SSPP_SCALER_QSEED3,  QSEED3 alogorithm support
- * @SDE_SSPP_SCALER_RGB,     RGB Scaler, supported by RGB pipes
  * @SDE_SSPP_CSC,            Support of Color space converion
  * @SDE_SSPP_CSC_10BIT,      Support of 10-bit Color space conversion
  * @SDE_SSPP_HSIC,           Global HSIC control
  * @SDE_SSPP_MEMCOLOR        Memory Color Support
  * @SDE_SSPP_PCC,            Color correction support
- * @SDE_SSPP_CURSOR,         SSPP can be used as a cursor layer
  * @SDE_SSPP_EXCL_RECT,      SSPP supports exclusion rect
  * @SDE_SSPP_SMART_DMA_V1,   SmartDMA 1.0 support
  * @SDE_SSPP_SMART_DMA_V2,   SmartDMA 2.0 support
@@ -302,19 +329,24 @@ enum {
  * @SDE_SSPP_FP16_CSC        FP16 CSC color processing block support
  * @SDE_SSPP_FP16_UNMULT     FP16 alpha unmult color processing block support
  * @SDE_SSPP_UBWC_STATS:     Support for ubwc stats
+ * @SDE_SSPP_SCALER_DE_LPF_BLEND:     Support for detail enhancer
+ * @SDE_SSPP_LINE_INSERTION  Line insertion support
+ * @SDE_SSPP_UCSC_IGC        UCSC IGC color processing block support
+ * @SDE_SSPP_UCSC_GC         UCSC GC color processing block support
+ * @SDE_SSPP_UCSC_CSC        UCSC CSC color processing block support
+ * @SDE_SSPP_UCSC_UNMULT     UCSC alpha unmult color processing block support
+ * @SDE_SSPP_UCSC_ALPHA_DITHER UCSC alpha dither color processing block support
  * @SDE_SSPP_MAX             maximum value
  */
 enum {
 	SDE_SSPP_SRC = 0x1,
 	SDE_SSPP_SCALER_QSEED2,
 	SDE_SSPP_SCALER_QSEED3,
-	SDE_SSPP_SCALER_RGB,
 	SDE_SSPP_CSC,
 	SDE_SSPP_CSC_10BIT,
 	SDE_SSPP_HSIC,
 	SDE_SSPP_MEMCOLOR,
 	SDE_SSPP_PCC,
-	SDE_SSPP_CURSOR,
 	SDE_SSPP_EXCL_RECT,
 	SDE_SSPP_SMART_DMA_V1,
 	SDE_SSPP_SMART_DMA_V2,
@@ -339,6 +371,13 @@ enum {
 	SDE_SSPP_FP16_CSC,
 	SDE_SSPP_FP16_UNMULT,
 	SDE_SSPP_UBWC_STATS,
+	SDE_SSPP_SCALER_DE_LPF_BLEND,
+	SDE_SSPP_LINE_INSERTION,
+	SDE_SSPP_UCSC_IGC,
+	SDE_SSPP_UCSC_GC,
+	SDE_SSPP_UCSC_CSC,
+	SDE_SSPP_UCSC_UNMULT,
+	SDE_SSPP_UCSC_ALPHA_DITHER,
 	SDE_SSPP_MAX
 };
 
@@ -351,6 +390,7 @@ enum {
  * @SDE_PERF_SSPP_CDP             Supports client driven prefetch
  * @SDE_PERF_SSPP_SYS_CACHE,      SSPP supports system cache
  * @SDE_PERF_SSPP_UIDLE,          sspp supports uidle
+ * @SDE_PERF_SSPP_UIDLE_FILL_LVL_SCALE,          sspp supports uidle fill level scaling
  * @SDE_PERF_SSPP_MAX             Maximum value
  */
 enum {
@@ -361,6 +401,7 @@ enum {
 	SDE_PERF_SSPP_CDP,
 	SDE_PERF_SSPP_SYS_CACHE,
 	SDE_PERF_SSPP_UIDLE,
+	SDE_PERF_SSPP_UIDLE_FILL_LVL_SCALE,
 	SDE_PERF_SSPP_MAX
 };
 
@@ -396,6 +437,18 @@ enum {
 };
 
 /**
+ * Destination scalar features
+ * @SDE_DS_DE_LPF_BLEND       DE_LPF blend supports for destination scalar block
+ * @SDE_DS_MERGE_CTRL  	      mode operation support for destination scalar block
+ * @SDE_DS_DE_LPF_MAX         maximum value
+ */
+enum {
+	SDE_DS_DE_LPF_BLEND = 0x1,
+	SDE_DS_MERGE_CTRL,
+	SDE_DS_DE_LPF_MAX
+};
+
+/**
  * DSPP sub-blocks
  * @SDE_DSPP_IGC             DSPP Inverse gamma correction block
  * @SDE_DSPP_PCC             Panel color correction block
@@ -411,8 +464,10 @@ enum {
  * @SDE_DSPP_LTM             LTM block
  * @SDE_DSPP_SPR             SPR block
  * @SDE_DSPP_DEMURA          Demura block
- * @SDE_DSPP_RC              RC block
+ * @SDE_DSPP_RC              RC block (mask)
+ * @SDE_DSPP_RC_PU           RC block (pu)
  * @SDE_DSPP_SB              SB LUT DMA
+ * @SDE_DSPP_DEMURA_CFG0_PARAM2 Demura block
  * @SDE_DSPP_MAX             maximum value
  */
 enum {
@@ -431,7 +486,9 @@ enum {
 	SDE_DSPP_SPR,
 	SDE_DSPP_DEMURA,
 	SDE_DSPP_RC,
+	SDE_DSPP_RC_PU,
 	SDE_DSPP_SB,
+	SDE_DSPP_DEMURA_CFG0_PARAM2,
 	SDE_DSPP_MAX
 };
 
@@ -450,6 +507,18 @@ enum {
 };
 
 /**
+ * SPR sub-features
+ * @SDE_SPR_INIT             SPR INIT feature
+ * @SDE_SPR_UDC              SPR UDC feature
+ * @SDE_SPR_MAX              maximum value
+ */
+enum {
+	SDE_SPR_INIT = 0x1,
+	SDE_SPR_UDC,
+	SDE_SPR_MAX
+};
+
+/**
  * PINGPONG sub-blocks
  * @SDE_PINGPONG_TE              Tear check block
  * @SDE_PINGPONG_TE2             Additional tear check block for split pipes
@@ -461,6 +530,7 @@ enum {
  * @SDE_PINGPONG_MERGE_3D,  Separate MERGE_3D block exists
  * @SDE_PINGPONG_CWB,           PP block supports CWB
  * @SDE_PINGPONG_CWB_DITHER,    PP block supports CWB dither
+ * @SDE_PINGPONG_SET_SIZE,      PP block supports setting latency buffer size
  * @SDE_PINGPONG_MAX
  */
 enum {
@@ -474,6 +544,7 @@ enum {
 	SDE_PINGPONG_MERGE_3D,
 	SDE_PINGPONG_CWB,
 	SDE_PINGPONG_CWB_DITHER,
+	SDE_PINGPONG_SET_SIZE,
 	SDE_PINGPONG_MAX
 };
 
@@ -486,6 +557,8 @@ enum {
  * @SDE_DSC_REDUCED_OB_MAX,	DSC size is limited to 10k
  * @SDE_DSC_ENC,                DSC encoder sub block
  * @SDE_DSC_CTL,                DSC ctl sub block
+ * @SDE_DSC_4HS,                Dedicated DSC 4HS config registers
+ * @SDE_DSC_FULL_ICH_PREC,      DSC use full ICH error precision
  * @SDE_DSC_MAX
  */
 enum {
@@ -496,6 +569,8 @@ enum {
 	SDE_DSC_REDUCED_OB_MAX,
 	SDE_DSC_ENC,
 	SDE_DSC_CTL,
+	SDE_DSC_4HS,
+	SDE_DSC_FULL_ICH_PREC,
 	SDE_DSC_MAX
 };
 
@@ -513,6 +588,18 @@ enum {
 };
 
 /**
+ * Downscale Blur sub-blocks/features
+ * @SDE_DNSC_BLUR_GAUS_LUT      Downscale Blur Gaussian LUT sub block
+ * @SDE_DNSC_BLUR_DITHER        Downscale Blur Dither sub block
+ * @SDE_DNSC_BLUR_MAX
+ */
+enum {
+	SDE_DNSC_BLUR_GAUS_LUT,
+	SDE_DNSC_BLUR_DITHER,
+	SDE_DNSC_BLUR_MAX
+};
+
+/**
  * CTL sub-blocks
  * @SDE_CTL_SPLIT_DISPLAY       CTL supports video mode split display
  * @SDE_CTL_PINGPONG_SPLIT      CTL supports pingpong split
@@ -521,7 +608,9 @@ enum {
  *                              blocks
  * @SDE_CTL_UIDLE               CTL supports uidle
  * @SDE_CTL_UNIFIED_DSPP_FLUSH  CTL supports only one flush bit for DSPP
- * @SDE_CTL_DMA4_DMA5		CTL supports DMA4 & DMA5 pipes
+ * @SDE_CTL_HW_FENCE            CTL supports hw fencing
+ * @SDE_CTL_HW_FENCE_TRIGGER_SEL CTL supports SW selection of cmd/vid modes for trigger sel
+ * @SDE_CTL_HW_FENCE_DIR_WRITE  CTL support hw fencing dir writes
  * @SDE_CTL_MAX
  */
 enum {
@@ -531,7 +620,9 @@ enum {
 	SDE_CTL_ACTIVE_CFG,
 	SDE_CTL_UIDLE,
 	SDE_CTL_UNIFIED_DSPP_FLUSH,
-	SDE_CTL_DMA4_DMA5,
+	SDE_CTL_HW_FENCE,
+	SDE_CTL_HW_FENCE_TRIGGER_SEL,
+	SDE_CTL_HW_FENCE_DIR_WRITE,
 	SDE_CTL_MAX
 };
 
@@ -541,24 +632,38 @@ enum {
  *                              pixel data arrives to this INTF
  * @SDE_INTF_TE                 INTF block has TE configuration support
  * @SDE_INTF_TE_ALIGN_VSYNC     INTF block has POMS Align vsync support
+ * @SDE_INTF_TE_32BIT           INTF block has 32bit TE configuration support
+ * @SDE_INTF_TE_SINGLE_UPDATE   INTF block has single frame per TE support
  * @SDE_INTF_WD_TIMER          INTF block has WD Timer support
  * @SDE_INTF_STATUS             INTF block has INTF_STATUS register
  * @SDE_INTF_RESET_COUNTER      INTF block has frame/line counter reset support
  * @SDE_INTF_PANEL_VSYNC_TS     INTF block has panel vsync timestamp logged
  * @SDE_INTF_MDP_VSYNC_TS       INTF block has mdp vsync timestamp logged
+ * @SDE_INTF_MDP_VSYNC_FC       INTF block has mdp vsync frame counter
  * @SDE_INTF_AVR_STATUS         INTF block has AVR_STATUS field in AVR_CONTROL register
+ * @SDE_INTF_WD_JITTER          INTF block has WD timer jitter support
+ * @SDE_INTF_WD_LTJ_CTL         INTF block has WD long term jitter control support
+ * @SDE_INTF_TE_DEASSERT_DETECT INTF block has TE Deassert detect support
+ * @SDE_INTF_VSYNC_TS_SRC_EN    INTF block has VSYNC timestamp source selection support
  * @SDE_INTF_MAX
  */
 enum {
 	SDE_INTF_INPUT_CTRL = 0x1,
 	SDE_INTF_TE,
 	SDE_INTF_TE_ALIGN_VSYNC,
+	SDE_INTF_TE_32BIT,
+	SDE_INTF_TE_SINGLE_UPDATE,
 	SDE_INTF_WD_TIMER,
 	SDE_INTF_STATUS,
 	SDE_INTF_RESET_COUNTER,
 	SDE_INTF_PANEL_VSYNC_TS,
 	SDE_INTF_MDP_VSYNC_TS,
+	SDE_INTF_MDP_VSYNC_FC,
 	SDE_INTF_AVR_STATUS,
+	SDE_INTF_WD_JITTER,
+	SDE_INTF_WD_LTJ_CTL,
+	SDE_INTF_TE_DEASSERT_DETECT,
+	SDE_INTF_VSYNC_TS_SRC_EN,
 	SDE_INTF_MAX
 };
 
@@ -572,23 +677,22 @@ enum {
  * @SDE_WB_CHROMA_DOWN,     Writeback chroma down block,
  * @SDE_WB_DOWNSCALE,       Writeback integer downscaler,
  * @SDE_WB_DITHER,          Dither block
- * @SDE_WB_TRAFFIC_SHAPER,  Writeback traffic shaper bloc
  * @SDE_WB_UBWC,            Writeback Universal bandwidth compression
- * @SDE_WB_YUV_CONFIG       Writeback supports output of YUV colorspace
  * @SDE_WB_PIPE_ALPHA       Writeback supports pipe alpha
- * @SDE_WB_XY_ROI_OFFSET    Writeback supports x/y-offset of out ROI in
- *                          the destination image
- * @SDE_WB_QOS,             Writeback supports QoS control, danger/safe/creq
  * @SDE_WB_QOS_8LVL,        Writeback supports 8-level QoS control
  * @SDE_WB_CDP              Writeback supports client driven prefetch
  * @SDE_WB_INPUT_CTRL       Writeback supports from which pp block input pixel
  *                          data arrives.
  * @SDE_WB_HAS_CWB          Writeback block supports concurrent writeback
  * @SDE_WB_HAS_DCWB         Writeback block supports dedicated CWB
+ * @SDE_HW_HAS_DUAL_DCWB    Writeback block supports dual dedicated CWB
  * @SDE_WB_CROP             CWB supports cropping
+ * @SDE_WB_SYS_CACHE        Writeback block supports system cache usage
  * @SDE_WB_CWB_CTRL         Separate CWB control is available for configuring
  * @SDE_WB_DCWB_CTRL        Separate DCWB control is available for configuring
  * @SDE_WB_CWB_DITHER_CTRL  CWB dither is available for configuring
+ * @SDE_WB_PROG_LINE        Writeback block supports programmable line ptr
+ * @SDE_WB_LINEAR_ROTATION  Writeback block supports line mode image rotation
  * @SDE_WB_MAX              maximum value
  */
 enum {
@@ -599,21 +703,21 @@ enum {
 	SDE_WB_CHROMA_DOWN,
 	SDE_WB_DOWNSCALE,
 	SDE_WB_DITHER,
-	SDE_WB_TRAFFIC_SHAPER,
 	SDE_WB_UBWC,
-	SDE_WB_YUV_CONFIG,
 	SDE_WB_PIPE_ALPHA,
-	SDE_WB_XY_ROI_OFFSET,
-	SDE_WB_QOS,
 	SDE_WB_QOS_8LVL,
 	SDE_WB_CDP,
 	SDE_WB_INPUT_CTRL,
 	SDE_WB_HAS_CWB,
 	SDE_WB_HAS_DCWB,
+	SDE_HW_HAS_DUAL_DCWB,
 	SDE_WB_CROP,
+	SDE_WB_SYS_CACHE,
 	SDE_WB_CWB_CTRL,
 	SDE_WB_DCWB_CTRL,
 	SDE_WB_CWB_DITHER_CTRL,
+	SDE_WB_PROG_LINE,
+	SDE_WB_LINEAR_ROTATION,
 	SDE_WB_MAX
 };
 
@@ -644,11 +748,122 @@ enum {
 /**
  * uidle features
  * @SDE_UIDLE_QACTIVE_OVERRIDE    uidle sends qactive signal
+ * @SDE_UIDLE_WB_FAL_STATUS       wb contributes to fal status
  * @SDE_UIDLE_MAX                 maximum value
  */
 enum {
 	SDE_UIDLE_QACTIVE_OVERRIDE = 0x1,
+	SDE_UIDLE_WB_FAL_STATUS,
 	SDE_UIDLE_MAX
+};
+
+/**
+ * sde_ppb_size_option           PPB size limit programming choice
+ * @SDE_PPB_SIZE_THRU_NONE       ppb size programming not available
+ * @SDE_PPB_SIZE_THRU_TOP        ppb size programming supported in top block
+ * @SDE_PPB_SIZE_THRU_PINGPONG   ppb size programming supported in pingpong block
+ */
+enum sde_ppb_size_option {
+	SDE_PPB_SIZE_THRU_NONE,
+	SDE_PPB_SIZE_THRU_TOP,
+	SDE_PPB_SIZE_THRU_PINGPONG,
+};
+
+/**
+ * MDSS features - For enabling target specific functionality in @sde_mdss_cfg "features" bitmap
+ * @SDE_FEATURE_CDP            Client driven prefetch supported
+ * @SDE_FEATURE_DIM_LAYER      Dim Layer supported
+ * @SDE_FEATURE_WB_UBWC        UBWC supported on Writeback
+ * @SDE_FEATURE_CWB            Concurrent Writeback supported
+ * @SDE_FEATURE_CWB_CROP       CWB Cropping supported
+ * @SDE_FEATURE_CWB_DITHER     CWB dither is supported
+ * @SDE_FEATURE_DEDICATED_CWB  Dedicated-CWB supported
+ * @SDE_FEATURE_DUAL_DEDICATED_CWB   Dual Dedicated-CWB supported
+ * @SDE_FEATURE_WB_ROTATION    Support for image rotation through WB block
+ * @SDE_FEATURE_3D_MERGE_RESET 3D merge reset supported
+ * @SDE_FEATURE_DECIMATION     Decimation supported
+ * @SDE_FEATURE_COMBINED_ALPHA Combined Alpha supported
+ * @SDE_FEATURE_BASE_LAYER     Base Layer supported
+ * @SDE_FEATURE_TOUCH_WAKEUP   Early wakeup with touch supported
+ * @SDE_FEATURE_SRC_SPLIT      Source split supported
+ * @SDE_FEATURE_VIG_P010       P010 ViG pipe format supported
+ * @SDE_FEATURE_FP16           FP16 pipe format supported
+ * @SDE_FEATURE_HDR            High Dynamic Range supported
+ * @SDE_FEATURE_HDR_PLUS       HDR10+ supported
+ * @SDE_FEATURE_QSYNC          QSYNC supported
+ * @SDE_FEATURE_AVR_STEP       AVR Step supported
+ * @SDE_FEATURE_DEMURA         Demura supported
+ * @SDE_FEATURE_HW_VSYNC_TS    HW timestamp supported
+ * @SDE_FEATURE_MULTIRECT_ERROR            Multirect Error supported
+ * @SDE_FEATURE_DELAY_PRG_FETCH            Delay programmable fetch supported
+ * @SDE_FEATURE_VBIF_DISABLE_SHAREABLE     VBIF disable inner/outer shareable required
+ * @SDE_FEATURE_INLINE_DISABLE_CONST_CLR   Inline rotation disable constant color required
+ * @SDE_FEATURE_INLINE_SKIP_THRESHOLD      Skip inline rotation threshold
+ * @SDE_FEATURE_DITHER_LUMA_MODE           Dither LUMA mode supported
+ * @SDE_FEATURE_RC_LM_FLUSH_OVERRIDE       RC LM flush override supported
+ * @SDE_FEATURE_SUI_MISR       SecureUI MISR supported
+ * @SDE_FEATURE_SUI_BLENDSTAGE SecureUI Blendstage supported
+ * @SDE_FEATURE_SUI_NS_ALLOWED SecureUI allowed to access non-secure context banks
+ * @SDE_FEATURE_TRUSTED_VM     Trusted VM supported
+ * @SDE_FEATURE_EPT            Expected present time supported
+ * @SDE_FEATURE_EPT_FPS        Expected fps supported for cmd mode
+ * @SDE_FEATURE_UBWC_STATS     UBWC statistics supported
+ * @SDE_FEATURE_VBIF_CLK_SPLIT VBIF clock split supported
+ * @SDE_FEATURE_CTL_DONE       Support for CTL DONE irq
+ * @SDE_FEATURE_SYS_CACHE_NSE  Support for no-self-evict feature
+ * @SDE_FEATURE_SYS_CACHE_STALING  Support for sys cache staling feature
+ * @SDE_FEATURE_HW_FENCE_IPCC  HW fence supports ipcc signaling in dpu
+ * @SDE_FEATURE_EMULATED_ENV   Emulated environment supported
+ * @SDE_FEATURE_UCSC_SUPPORTED  UCSC pipe format supported
+ * @SDE_FEATURE_MAX:             MAX features value
+ */
+enum sde_mdss_features {
+	SDE_FEATURE_CDP,
+	SDE_FEATURE_DIM_LAYER,
+	SDE_FEATURE_WB_UBWC,
+	SDE_FEATURE_CWB,
+	SDE_FEATURE_CWB_CROP,
+	SDE_FEATURE_CWB_DITHER,
+	SDE_FEATURE_DEDICATED_CWB,
+	SDE_FEATURE_DUAL_DEDICATED_CWB,
+	SDE_FEATURE_WB_ROTATION,
+	SDE_FEATURE_IDLE_PC,
+	SDE_FEATURE_3D_MERGE_RESET,
+	SDE_FEATURE_DECIMATION,
+	SDE_FEATURE_COMBINED_ALPHA,
+	SDE_FEATURE_BASE_LAYER,
+	SDE_FEATURE_TOUCH_WAKEUP,
+	SDE_FEATURE_SRC_SPLIT,
+	SDE_FEATURE_VIG_P010,
+	SDE_FEATURE_FP16,
+	SDE_FEATURE_HDR,
+	SDE_FEATURE_HDR_PLUS,
+	SDE_FEATURE_QSYNC,
+	SDE_FEATURE_AVR_STEP,
+	SDE_FEATURE_DEMURA,
+	SDE_FEATURE_HW_VSYNC_TS,
+	SDE_FEATURE_MULTIRECT_ERROR,
+	SDE_FEATURE_DELAY_PRG_FETCH,
+	SDE_FEATURE_VBIF_DISABLE_SHAREABLE,
+	SDE_FEATURE_INLINE_DISABLE_CONST_CLR,
+	SDE_FEATURE_INLINE_SKIP_THRESHOLD,
+	SDE_FEATURE_DITHER_LUMA_MODE,
+	SDE_FEATURE_RC_LM_FLUSH_OVERRIDE,
+	SDE_FEATURE_SUI_MISR,
+	SDE_FEATURE_SUI_BLENDSTAGE,
+	SDE_FEATURE_SUI_NS_ALLOWED,
+	SDE_FEATURE_TRUSTED_VM,
+	SDE_FEATURE_EPT,
+	SDE_FEATURE_EPT_FPS,
+	SDE_FEATURE_UBWC_STATS,
+	SDE_FEATURE_VBIF_CLK_SPLIT,
+	SDE_FEATURE_CTL_DONE,
+	SDE_FEATURE_SYS_CACHE_NSE,
+	SDE_FEATURE_SYS_CACHE_STALING,
+	SDE_FEATURE_HW_FENCE_IPCC,
+	SDE_FEATURE_EMULATED_ENV,
+	SDE_FEATURE_UCSC_SUPPORTED,
+	SDE_FEATURE_MAX
 };
 
 /**
@@ -742,6 +957,14 @@ struct sde_vdc_blk {
 };
 
 /**
+ * struct sde_dnsc_blur_blk : Downscale Blur sub-blk information
+ * @info:   HW register and features supported by this sub-blk
+ */
+struct sde_dnsc_blur_blk {
+	SDE_HW_SUBBLK_INFO;
+};
+
+/**
  * struct sde_format_extended - define sde specific pixel format+modifier
  * @fourcc_format: Base FOURCC pixel format code
  * @modifier: 64-bit drm format modifier, same modifier must be applied to all
@@ -763,6 +986,8 @@ enum sde_qos_lut_usage {
 	SDE_QOS_LUT_USAGE_CWB_TILE,
 	SDE_QOS_LUT_USAGE_INLINE,
 	SDE_QOS_LUT_USAGE_INLINE_RESTRICTED_FMTS,
+	SDE_QOS_LUT_USAGE_OFFLINE_WB,
+	SDE_QOS_LUT_USAGE_WB_ROT,
 	SDE_QOS_LUT_USAGE_MAX,
 };
 
@@ -774,6 +999,16 @@ enum sde_creq_lut_types {
 	SDE_CREQ_LUT_TYPE_NOQSEED,
 	SDE_CREQ_LUT_TYPE_QSEED,
 	SDE_CREQ_LUT_TYPE_MAX,
+};
+
+/**
+ * enum sde_danger_safe_lut_types - define danger/safe LUT types possible for all use cases
+ * This is second dimension to sde_qos_lut_usage enum.
+ */
+enum sde_danger_safe_lut_types {
+	SDE_DANGER_SAFE_LUT_TYPE_PORTRAIT,
+	SDE_DANGER_SAFE_LUT_TYPE_LANDSCAPE,
+	SDE_DANGER_SAFE_LUT_TYPE_MAX,
 };
 
 /**
@@ -812,6 +1047,16 @@ enum sde_creq_lut_types {
  * @fp16_csc_blk: FP16 CSC block array
  * @num_fp16_unmult_blk: number of FP16 UNMULT blocks
  * @fp16_unmult_blk: FP16 UNMULT block array
+ * @num_ucsc_igc_blk: number of UCSC IGC blocks
+ * @ucsc_igc_blk: UCSC IGC block array
+ * @num_ucsc_gc_blk: number of UCSC GC blocks
+ * @ucsc_gc_blk: UCSC GC block array
+ * @num_ucsc_csc_blk: number of UCSC CSC blocks
+ * @ucsc_csc_blk: UCSC CSC block array
+ * @num_ucsc_unmult_blk: number of ucsc UNMULT blocks
+ * @ucsc_unmult_blk: UCSC UNMULT block array
+ * @num_ucsc_alpha_dither_blk: number of ucsc ALPHA DITHER blocks
+ * @ucsc_alpha_dither_blk: UCSC ALPHA DITHER block array
  * @unmult_offset: Unmult register offset
  * @format_list: Pointer to list of supported formats
  * @virt_format_list: Pointer to list of supported formats for virtual planes
@@ -864,6 +1109,16 @@ struct sde_sspp_sub_blks {
 	struct sde_pp_blk fp16_csc_blk[SSPP_SUBBLK_COUNT_MAX];
 	u32 num_fp16_unmult_blk;
 	struct sde_pp_blk fp16_unmult_blk[SSPP_SUBBLK_COUNT_MAX];
+	u32 num_ucsc_igc_blk;
+	struct sde_pp_blk ucsc_igc_blk[SSPP_SUBBLK_COUNT_MAX];
+	u32 num_ucsc_gc_blk;
+	struct sde_pp_blk ucsc_gc_blk[SSPP_SUBBLK_COUNT_MAX];
+	u32 num_ucsc_csc_blk;
+	struct sde_pp_blk ucsc_csc_blk[SSPP_SUBBLK_COUNT_MAX];
+	u32 num_ucsc_unmult_blk;
+	struct sde_pp_blk ucsc_unmult_blk[SSPP_SUBBLK_COUNT_MAX];
+	u32 num_ucsc_alpha_dither_blk;
+	struct sde_pp_blk ucsc_alpha_dither_blk[SSPP_SUBBLK_COUNT_MAX];
 	u32 unmult_offset[SSPP_SUBBLK_COUNT_MAX];
 
 	const struct sde_format_extended *format_list;
@@ -901,12 +1156,14 @@ struct sde_lm_sub_blks {
  * @version: HW Algorithm version.
  * @idx: HW block instance id.
  * @mem_total_size: data memory size.
+ * @min_region_width: minimum region width in pixels.
  */
 struct sde_dspp_rc {
 	SDE_HW_SUBBLK_INFO;
 	u32 version;
 	u32 idx;
 	u32 mem_total_size;
+	u32 min_region_width;
 };
 
 struct sde_dspp_sub_blks {
@@ -952,6 +1209,16 @@ struct sde_vdc_sub_blks {
 	struct sde_vdc_blk ctl;
 };
 
+/**
+ * struct sde_dnsc_blur_sub_blks : Downscale Blur sub-blks
+ * @gaus_lut: Gaussian coef LUT register offset(relative to Downscale Blur base)
+ * @dither: Dither register offset(relative to Downscale Blur base)
+ */
+struct sde_dnsc_blur_sub_blks {
+	struct sde_dnsc_blur_blk gaus_lut;
+	struct sde_dnsc_blur_blk dither;
+};
+
 struct sde_wb_sub_blocks {
 	u32 maxlinewidth;
 	u32 maxlinewidth_linear;
@@ -971,18 +1238,12 @@ enum sde_clk_ctrl_type {
 	SDE_CLK_CTRL_VIG2,
 	SDE_CLK_CTRL_VIG3,
 	SDE_CLK_CTRL_VIG4,
-	SDE_CLK_CTRL_RGB0,
-	SDE_CLK_CTRL_RGB1,
-	SDE_CLK_CTRL_RGB2,
-	SDE_CLK_CTRL_RGB3,
 	SDE_CLK_CTRL_DMA0,
 	SDE_CLK_CTRL_DMA1,
 	SDE_CLK_CTRL_DMA2,
 	SDE_CLK_CTRL_DMA3,
 	SDE_CLK_CTRL_DMA4,
 	SDE_CLK_CTRL_DMA5,
-	SDE_CLK_CTRL_CURSOR0,
-	SDE_CLK_CTRL_CURSOR1,
 	SDE_CLK_CTRL_WB0,
 	SDE_CLK_CTRL_WB1,
 	SDE_CLK_CTRL_WB2,
@@ -992,8 +1253,8 @@ enum sde_clk_ctrl_type {
 };
 
 #define SDE_CLK_CTRL_VALID(x) (x > SDE_CLK_CTRL_NONE && x < SDE_CLK_CTRL_MAX)
-#define SDE_CLK_CTRL_SSPP_VALID(x) (x >= SDE_CLK_CTRL_VIG0 && x <= SDE_CLK_CTRL_CURSOR1)
-#define SDE_CLK_CTRL_WB_VALID(x) (x >= SDE_CLK_CTRL_WB0 && x <= SDE_CLK_CTRL_WB2)
+#define SDE_CLK_CTRL_SSPP_VALID(x) (x >= SDE_CLK_CTRL_VIG0 && x < SDE_CLK_CTRL_WB0)
+#define SDE_CLK_CTRL_WB_VALID(x) (x >= SDE_CLK_CTRL_WB0 && x < SDE_CLK_CTRL_LUTDMA)
 #define SDE_CLK_CTRL_LUTDMA_VALID(x) (x == SDE_CLK_CTRL_LUTDMA)
 #define SDE_CLK_CTRL_IPCC_MSI_VALID(x) (x == SDE_CLK_CTRL_IPCC_MSI)
 
@@ -1007,18 +1268,12 @@ static const char *sde_clk_ctrl_type_s[SDE_CLK_CTRL_MAX] = {
 	[SDE_CLK_CTRL_VIG2] = "VIG2",
 	[SDE_CLK_CTRL_VIG3] = "VIG3",
 	[SDE_CLK_CTRL_VIG4] = "VIG4",
-	[SDE_CLK_CTRL_RGB0] = "RGB0",
-	[SDE_CLK_CTRL_RGB1] = "RGB1",
-	[SDE_CLK_CTRL_RGB2] = "RGB2",
-	[SDE_CLK_CTRL_RGB3] = "RGB3",
 	[SDE_CLK_CTRL_DMA0] = "DMA0",
 	[SDE_CLK_CTRL_DMA1] = "DMA1",
 	[SDE_CLK_CTRL_DMA2] = "DMA2",
 	[SDE_CLK_CTRL_DMA3] = "DMA3",
 	[SDE_CLK_CTRL_DMA4] = "DMA4",
 	[SDE_CLK_CTRL_DMA5] = "DMA5",
-	[SDE_CLK_CTRL_CURSOR0] = "CURSOR0",
-	[SDE_CLK_CTRL_CURSOR1] = "CURSOR1",
 	[SDE_CLK_CTRL_WB0] = "WB0",
 	[SDE_CLK_CTRL_WB1] = "WB1",
 	[SDE_CLK_CTRL_WB2] = "WB2",
@@ -1139,6 +1394,7 @@ struct sde_sspp_cfg {
  * @dspp:              ID of connected DSPP, DSPP_MAX if unsupported
  * @pingpong:          ID of connected PingPong, PINGPONG_MAX if unsupported
  * @ds:                ID of connected DS, DS_MAX if unsupported
+ * @merge_3d:          ID of connected 3d MUX
  * @dummy_mixer:       identifies dcwb mixer is considered dummy
  * @lm_pair_mask:      Bitmask of LMs that can be controlled by same CTL
  */
@@ -1148,6 +1404,7 @@ struct sde_lm_cfg {
 	u32 dspp;
 	u32 pingpong;
 	u32 ds;
+	u32 merge_3d;
 	bool dummy_mixer;
 	unsigned long lm_pair_mask;
 };
@@ -1267,6 +1524,46 @@ struct sde_cdm_cfg   {
 };
 
 /**
+ * struct sde_dnsc_blur_cfg - information of Downscale Blur blocks
+ * @id                 enum identifying this block
+ * @base               register offset of this block
+ * @features           bit mask identifying sub-blocks/features
+ * @sblk               sub-blocks associated with Downscale Blur
+ * @wb_connect:        Bitmask of Writeback IDs this CDM can connect to
+ */
+struct sde_dnsc_blur_cfg   {
+	SDE_HW_BLK_INFO;
+	struct sde_dnsc_blur_sub_blks *sblk;
+	unsigned long wb_connect;
+};
+
+/**
+ * struct sde_dnsc_blur_filter_info - information of support downscale filter/ratios
+ * @filter:		type of filter used
+ * @src_min:		min src width/height supported
+ * @src_max:		max src width/height supported
+ * @dst_min:		min dst width/height supported
+ * @dst_max:		max dst width/height supported
+ * @min_ratio:		min downscale ratio supported
+ * @max_ratio:		max downscale ratio supported
+ * @fraction_support:	supports fractional downscale ratio
+ * @ratio_count:	valid count of ratios in @ratio array
+ * @ratio:		array of supported downscale ratios
+ */
+struct sde_dnsc_blur_filter_info {
+	u32 filter;
+	u32 src_min;
+	u32 src_max;
+	u32 dst_min;
+	u32 dst_max;
+	u32 min_ratio;
+	u32 max_ratio;
+	bool fraction_support;
+	u32 ratio_count;
+	u32 ratio[DNSC_BLUR_MAX_RATIO_COUNT];
+};
+
+/**
  * struct sde_intf_cfg - information of timing engine blocks
  * @id                 enum identifying this block
  * @base               register offset of this block
@@ -1290,7 +1587,8 @@ struct sde_intf_cfg  {
  * @base               register offset of this block
  * @features           bit mask identifying sub-blocks/features
  * @sblk               sub-block information
- * @format_list: Pointer to list of supported formats
+ * @format_list:       Pointer to list of supported output formats
+ * @rot_format_list:   Pointer to list of supported output formats in WB rotation
  * @vbif_idx           vbif identifier
  * @xin_id             client interface identifier
  * @clk_ctrl           clock control identifier
@@ -1299,6 +1597,7 @@ struct sde_wb_cfg {
 	SDE_HW_BLK_INFO;
 	const struct sde_wb_sub_blocks *sblk;
 	const struct sde_format_extended *format_list;
+	const struct sde_format_extended *rot_format_list;
 	u32 vbif_idx;
 	u32 xin_id;
 	enum sde_clk_ctrl_type clk_ctrl;
@@ -1349,12 +1648,13 @@ struct sde_vbif_dynamic_ot_tbl {
 
 /**
  * struct sde_vbif_qos_tbl - QoS priority table
- * @npriority_lvl      num of priority level
+ * @count              count of entries - rp_remap + lvl_remap entries
  * @priority_lvl       pointer to array of priority level in ascending order
  */
 struct sde_vbif_qos_tbl {
-	u32 npriority_lvl;
+	u32 count;
 	u32 *priority_lvl;
+	u32 npriority_lvl;
 };
 
 /**
@@ -1363,6 +1663,9 @@ struct sde_vbif_qos_tbl {
  * @VBIF_NRT_CLIENT: non-realtime clients like writeback
  * @VBIF_CWB_CLIENT: concurrent writeback client
  * @VBIF_LUTDMA_CLIENT: LUTDMA client
+ * @VBIF_CNOC_CLIENT: HW fence client
+ * @VBIF_OFFLINE_WB_CLIENT: Offline WB client used in 2-pass composition
+ * @VBIF_WB_ROT_CLIENT: WB Rotation client used in 2-pass composition
  * @VBIF_MAX_CLIENT: max number of clients
  */
 enum sde_vbif_client_type {
@@ -1370,6 +1673,9 @@ enum sde_vbif_client_type {
 	VBIF_NRT_CLIENT,
 	VBIF_CWB_CLIENT,
 	VBIF_LUTDMA_CLIENT,
+	VBIF_CNOC_CLIENT,
+	VBIF_OFFLINE_WB_CLIENT,
+	VBIF_WB_ROT_CLIENT,
 	VBIF_MAX_CLIENT
 };
 
@@ -1429,6 +1735,7 @@ struct sde_reg_dma_blk_info {
  * @version            version of lutdma hw blocks
  * @trigger_sel_off    offset to trigger select registers of lutdma
  * @broadcast_disabled flag indicating if broadcast usage should be avoided
+ * @split_vbif_supported indicates if VBIF clock split is supported
  * @xin_id             VBIF xin client-id for LUTDMA
  * @vbif_idx           VBIF id (RT/NRT)
  * @base_off           Base offset of LUTDMA from the MDSS root
@@ -1439,6 +1746,7 @@ struct sde_reg_dma_cfg {
 	u32 version;
 	u32 trigger_sel_off;
 	u32 broadcast_disabled;
+	u32 split_vbif_supported;
 	u32 xin_id;
 	u32 vbif_idx;
 	u32 base_off;
@@ -1468,14 +1776,27 @@ struct sde_perf_cdp_cfg {
 
 /**
  * struct sde_sc_cfg - define system cache configuration
- * @has_sys_cache: true if system cache is enabled
+ * @slice:     llcc slice descriptor
+ * @llcc_uuid: llcc use case id for the system cache
  * @llcc_scid: scid for the system cache
  * @llcc_slice_size: slice size of the system cache
  */
 struct sde_sc_cfg {
-	bool has_sys_cache;
+	struct llcc_slice_desc *slice;
+	int llcc_uid;
 	int llcc_scid;
 	size_t llcc_slice_size;
+};
+
+/**
+ * autorefresh_disable_sequence - defines autorefresh disable sequences
+ * followed during bootup with continuous splash
+ * @AUTOREFRESH_DISABLE_SEQ1 - disable TE / disable autorefresh / Wait for tx-complete / enable TE
+ * @AUTOREFRESH_DISABLE_SEQ2 - disable TE / Disable autorefresh / enable TE
+ */
+enum autorefresh_disable_sequence {
+	AUTOREFRESH_DISABLE_SEQ1,
+	AUTOREFRESH_DISABLE_SEQ2,
 };
 
 /**
@@ -1553,278 +1874,248 @@ struct sde_perf_cfg {
  * struct sde_mdss_cfg - information of MDSS HW
  * This is the main catalog data structure representing
  * this HW version. Contains number of instances,
- * register offsets, capabilities of the all MDSS HW sub-blocks.
+ * register offsets, capabilities of all the MDSS HW sub-blocks.
  *
- * @trusted_vm_env	set to true, if the driver is executing in
- *			the trusted VM. false, otherwise.
- * @max_trusted_vm_displays	maximum number of concurrent trusted
- *				vm displays supported.
- * @tvm_reg_count		number of sub-driver register ranges that need to be included
- *						for trusted vm for accepting the resources
- * @tvm_reg				array of sub-driver register ranges entries that need to be
- *						included
- * @max_sspp_linewidth max source pipe line width support.
- * @vig_sspp_linewidth max vig source pipe line width support.
- * @scaling_linewidth max vig source pipe linewidth for scaling usecases
- * @max_mixer_width    max layer mixer line width support.
- * @max_dsc_width      max dsc line width support.
- * @max_mixer_blendstages max layer mixer blend stages or
- *                       supported z order
- * @max_wb_linewidth   max writeback line width support.
- * @max_wb_linewidth_linear   max writeback line width for linear formats.
- * @max_display_width   maximum display width support.
- * @max_display_height  maximum display height support.
-
- * @min_display_width   minimum display width support.
- * @min_display_height  minimum display height support.
- * @in_rot_maxheight    max pre rotated height for inline rotation.
- * @csc_type           csc or csc_10bit support.
- * @smart_dma_rev      Supported version of SmartDMA feature.
- * @ctl_rev            supported version of control path.
- * @has_src_split      source split feature status
- * @has_cdp            Client driven prefetch feature status
- * @has_wb_ubwc        UBWC feature supported on WB
- * @has_cwb_crop       CWB cropping is supported
- * @has_cwb_support    indicates if device supports primary capture through CWB
- * @has_dedicated_cwb_support    indicates if device supports dedicated path for CWB capture
- * @has_cwb_dither     indicates if device supports cwb dither feature
- * @cwb_blk_off        CWB offset address
- * @cwb_blk_stride     offset between each CWB blk
- * @ubwc_version       UBWC feature version (0x0 for not supported)
- * @ubwc_bw_calc_version indicate how UBWC BW has to be calculated
- * @skip_inline_rot_thresh    Skip inline rotation threshold
- * @has_idle_pc        indicate if idle power collapse feature is supported
- * @enable_hibernation indicate if hibernation feature is supported
- * @allowed_dsc_reservation_switch  intf to which dsc reservation switch is supported
- * @has_reduced_ob_max	indicate if DSC size is limited to 10k
- * @wakeup_with_touch  indicate early wake up display with input touch event
- * @has_hdr            HDR feature support
- * @has_hdr_plus       HDR10+ feature support
- * @dma_formats        Supported formats for dma pipe
- * @cursor_formats     Supported formats for cursor pipe
- * @vig_formats        Supported formats for vig pipe
- * @wb_formats         Supported formats for wb
- * @virt_vig_formats   Supported formats for virtual vig pipe
- * @vbif_qos_nlvl      number of vbif QoS priority level
- * @ts_prefill_rev     prefill traffic shaper feature revision
- * @true_inline_rot_rev	inline rotator feature revision
- * @macrotile_mode     UBWC parameter for macro tile channel distribution
- * @pipe_order_type    indicate if it is required to specify pipe order
- * @sspp_multirect_error flag to indicate whether ubwc and meta error by rect is supported
- * @delay_prg_fetch_start indicates if throttling the fetch start is required
- * @has_qsync	       Supports qsync feature
- * @has_3d_merge_reset Supports 3D merge reset
- * @has_decimation     Supports decimation
- * @has_trusted_vm_support	     Supported HW sharing with trusted VM
- * @has_avr_step       Supports AVR with vsync alignment to a set step rate
- * @rc_lm_flush_override        Support Rounded Corner using layer mixer flush
- * @has_mixer_combined_alpha     Mixer has single register for FG & BG alpha
- * @vbif_disable_inner_outer_shareable     VBIF requires disabling shareables
- * @inline_disable_const_clr     Disable constant color during inline rotate
- * @dither_luma_mode_support   Enables dither luma mode
- * @has_base_layer     Supports staging layer as base layer
- * @demura_supported   Demura pipe support flag(~0x00 - Not supported)
- * @qseed_sw_lib_rev	qseed sw library type supporting the qseed hw
- * @qseed_hw_version   qseed hw version of the target
- * @sc_cfg: system cache configuration
- * @syscache_supported  Flag to indicate if sys cache support is enabled
- * @uidle_cfg		Settings for uidle feature
- * @sui_misr_supported  indicate if secure-ui-misr is supported
- * @sui_block_xin_mask  mask of all the xin-clients to be blocked during
- *                         secure-ui when secure-ui-misr feature is supported
- * @sec_sid_mask_count  number of SID masks
- * @sec_sid_mask        SID masks used during the scm_call for transition
- *                         between secure/non-secure sessions
- * @sui_ns_allowed      flag to indicate non-secure context banks are allowed
- *                         during secure-ui session
- * @sui_supported_blendstage  secure-ui supported blendstage
- * @has_sui_blendstage  flag to indicate secure-ui has a blendstage restriction
+ * @hw_rev              MDSS HW revision
+ * @ubwc_rev            UBWC feature version (0x0 for not supported)
+ * @ubwc_bw_calc_rev    indicates how UBWC BW has to be calculated
+ * @qseed_sw_lib_rev    qseed SW library version
+ * @qseed_hw_rev        qseed HW block version
+ * @smart_dma_rev       smartDMA block version
+ * @ctl_rev             control path block version
+ * @sid_rev             SID version
+ * @has_reduced_ob_max indicate if DSC size is limited to 10k
+ * @ts_prefill_rev      prefill traffic shaper feature revision
+ * @true_inline_rot_rev inline rotator feature revision
+ * @dnsc_blur_rev       downscale blur HW block version
+ * @hw_fence_rev        hw fence feature revision
+ * @mdss_count          number of valid MDSS HW blocks
+ * @mdss                array of pointers to MDSS HW blocks
+ * @mdss_hw_block_size  max offset of MDSS_HW block (0 offset), used for debug
+ * @mdp_count           number of valid MDP HW blocks
+ * @mdp                 array of pointers to MDP HW blocks
+ * @ctl_count           number of valid CTL blocks available
+ * @ctl                 array of pointers to CTL blocks
+ * @sspp_count          number of valid SSPP blocks available
+ * @sspp                array of pointers to SSPP blocks
+ * @mixer_count         number of valid LM blocks available
+ * @mixer               array of pointers to LM blocks
+ * @dspp_top            pointer to common DSPP_TOP block
+ * @dspp_count          number of valid DSPP blocks available
+ * @dspp                array of pointers to DSPP blocks
+ * @ds_count            number of valid dest scaler blocks available
+ * @ds                  array of pointers to DS blocks
+ * @pingpong_count      number of valid pingpong blocks available
+ * @pingpong            array of pointers to pingpong blocks
+ * @dsc_count           number of valid DSC blocks available
+ * @dsc                 array of pointers to DSC blocks
+ * @vdc_count           number of valid VDC blocks available
+ * @vdc                 array of pointers to VDC blocks
+ * @cdm_count           number of valid chroma-down modules available
+ * @cdm                 array of pointers to CDM blocks
+ * @dnsc_blur_count     number of valid Downscale Blur modules available
+ * @dnsc_blur           array of pointers to Downscale Blur blocks
+ * @intf_count          number of valid INTF blocks available
+ * @intf                array of pointers to INTF blocks
+ * @wb_count            number of valid writeback blocks available
+ * @wb                  array of pointers to WB blocks
+ * @vbif_count          number of valid VBIF blocks available
+ * @vbif                array of pointers to VBIF blocks
+ * @merge_3d_count      number of valid merge 3d blocks available
+ * @merge_3d            array of pointers to merge 3d blocks
+ * @qdss_count          number of valid QDSS blocks available
+ * @qdss                array of pointers to QDSS blocks
+ * @cwb_blk_off         CWB offset address
+ * @cwb_blk_stride      offset between each CWB blk
+ * @dcwb_count          number of dcwb hardware instances
  * @ddr_count           number of ddr types supported
  * @ddr_list_index      Index of supported ddr type
- * @has_cursor    indicates if hardware cursor is supported
- * @has_vig_p010  indicates if vig pipe supports p010 format
- * @has_fp16      indicates if FP16 format is supported on SSPP pipes
- * @has_precise_vsync_ts  indicates if HW has vsyc timestamp logging capability
- * @has_ubwc_stats: indicates if ubwc stats feature is supported
- * @has_vbif_clk_split: VBIF clock split supported
- * @mdss_hw_block_size  Max offset of MDSS_HW block (0 offset), used for debug
- * @inline_rot_formats formats supported by the inline rotator feature
- * @max_cwb             max number of cwb supported
+ * @reg_dma_count       number of valid reg dma blocks available
+ * @dma_cfg             pointer to config containing reg dma blocks
+ * @ad_count            number of AD4 hardware instances
+ * @ltm_count           number of LTM hardware instances
+ * @rc_count            number of rounded corner hardware instances
+ * @spr_count           number of SPR hardware instances
+ * @demura_count        number of demura hardware instances
+ * @demura_supported    indicates which SSPP/RECT combinations support demura
+ * @trusted_vm_env      true if the driver is executing in the trusted VM
+ * @tvm_reg_count	number of sub-driver register ranges that need to be included
+ *					for trusted vm for accepting the resources
+ * @tvm_reg		array of sub-driver register range entries that need to be included
+ * @max_trusted_vm_displays     maximum number of concurrent trusted VM displays supported
+ * @sui_block_xin_mask  mask of xin-clients to block during secure-ui when SUI MISR is supported
+ * @sec_sid_mask_count  number of SID masks
+ * @sec_sid_mask        SID masks used during the scm_call for secure/non-secure transitions
+ * @sui_supported_blendstage    secure-ui supported blendstage
+ * @max_display_width   minimum display width
+ * @max_display_height  minimum display height
+ * @min_display_width   maximum display width
+ * @min_display_height  maximum display height
+ * @in_rot_maxheight    max pre rotated height for inline rotation.
+ * @max_sspp_linewidth  max source pipe line width
+ * @vig_sspp_linewidth  max vig source pipe line width support
+ * @scaling_linewidth   max vig source pipe linewidth for scaling usecases
+ * @max_wb_linewidth    max writeback line width
+ * @max_wb_linewidth_linear     max writeback line width for linear formats
+ * @max_dsc_width       max dsc line width
+ * @max_mixer_width     max layer mixer line width
+ * @max_mixer_blendstages       max layer mixer blend stages (z orders)
+ * @max_cwb             max number of dcwb/cwb supported
+ * @vbif_qos_nlvl       number of vbif QoS priority levels
+ * @qos_target_time_ns  normalized qos target time for line-based qos
+ * @macrotile_mode      UBWC parameter for macro tile channel distribution
+ * @pipe_order_type     indicates if it is required to specify pipe order
+ * @csc_type            csc or csc_10bit support
+ * @allowed_dsc_reservation_switch      intf to which dsc reservation switch is supported
+ * @autorefresh_disable_seq    indicates the autorefresh disable sequence; default is seq1
+ * @sc_cfg              system cache configuration
+ * @perf                performance control settings
+ * @uidle_cfg           settings for uidle feature
  * @irq_offset_list     list of sde_intr_irq_offsets to initialize irq table
- * @rc_count	number of rounded corner hardware instances
- * @demura_count number of demura hardware instances
- * @dcwb_count          number of dcwb hardware instances
+ * @has_line_insertion  line insertion support status
+ * @features            bitmap of supported SDE_FEATUREs
+ * @dma_formats         supported formats for dma pipe
+ * @vig_formats         supported formats for vig pipe
+ * @wb_formats          supported formats for wb
+ * @wb_rot_formats      supported output formats for wb rotation operation
+ * @virt_vig_formats    supported formats for virtual vig pipe
+ * @inline_rot_formats  supported formats for inline rotation
+ * @inline_rot_restricted_formats       restricted formats for inline rotation
+ * @dnsc_blur_filters        supported filters for downscale blur
+ * @dnsc_blur_filter_count   supported filter count for downscale blur
+ * @ipcc_protocol_id    ipcc protocol id for the hw
+ * @ipcc_client_phys_id dpu ipcc client id for the hw, physical client id if supported
+ * @ppb_sz_program      enum value for pingpong buffer size programming choice by hw
+ * @ppb_buf_max_lines   maximum lines needed for pingpong latency buffer size
  */
 struct sde_mdss_cfg {
-	u32 hwversion;
-	bool trusted_vm_env;
-	u32 max_trusted_vm_displays;
-	u32 tvm_reg_count;
-	struct resource tvm_reg[MAX_REG_SIZE_ENTRIES];
-
-	u32 max_sspp_linewidth;
-	u32 vig_sspp_linewidth;
-	u32 scaling_linewidth;
-	u32 max_mixer_width;
-	u32 max_dsc_width;
-	u32 max_mixer_blendstages;
-	u32 max_wb_linewidth;
-	u32 max_wb_linewidth_linear;
-
-	u32 max_display_width;
-	u32 max_display_height;
-	u32 min_display_width;
-	u32 min_display_height;
-	u32 in_rot_maxheight;
-
-	u32 csc_type;
+	/* Block Revisions */
+	u32 hw_rev;
+	u32 ubwc_rev;
+	u32 ubwc_bw_calc_rev;
+	u32 qseed_sw_lib_rev;
+	u32 qseed_hw_rev;
 	u32 smart_dma_rev;
 	u32 ctl_rev;
-	bool has_src_split;
-	bool has_cdp;
-	bool has_dim_layer;
-	bool has_wb_ubwc;
-	bool has_cwb_crop;
-	bool has_cwb_support;
-	bool has_dedicated_cwb_support;
-	bool has_cwb_dither;
-	u32 cwb_blk_off;
-	u32 cwb_blk_stride;
-	u32 ubwc_version;
-	u32 ubwc_bw_calc_version;
-	bool skip_inline_rot_threshold;
-	bool has_idle_pc;
-	bool enable_hibernation;
-	u32 allowed_dsc_reservation_switch;
+	u32 sid_rev;
 	bool has_reduced_ob_max;
-	bool wakeup_with_touch;
-	u32 vbif_qos_nlvl;
 	u32 ts_prefill_rev;
 	u32 true_inline_rot_rev;
-	u32 macrotile_mode;
-	u32 pipe_order_type;
-	bool sspp_multirect_error;
-	bool delay_prg_fetch_start;
-	bool has_qsync;
-	bool has_3d_merge_reset;
-	bool has_decimation;
-	bool has_mixer_combined_alpha;
-	bool vbif_disable_inner_outer_shareable;
-	bool inline_disable_const_clr;
-	bool dither_luma_mode_support;
-	bool has_base_layer;
-	bool has_demura;
-	bool has_trusted_vm_support;
-	bool has_avr_step;
-	bool rc_lm_flush_override;
-	u32 demura_supported[SSPP_MAX][2];
-	u32 qseed_sw_lib_rev;
-	u32 qseed_hw_version;
+	u32 dnsc_blur_rev;
+	u32 hw_fence_rev;
 
-	struct sde_sc_cfg sc_cfg[SDE_SYS_CACHE_MAX];
-	bool syscache_supported;
-
-	bool sui_misr_supported;
-	u32 sui_block_xin_mask;
-
-	u32 sec_sid_mask_count;
-	u32 sec_sid_mask[MAX_BLOCKS];
-	u32 sui_ns_allowed;
-	u32 sui_supported_blendstage;
-	bool has_sui_blendstage;
-
+	/* HW Blocks */
+	u32 mdss_count;
 	u32 ddr_count;
 	u32 ddr_list_index;
-
-	bool has_hdr;
-	bool has_hdr_plus;
-	bool has_cursor;
-	bool has_vig_p010;
-	bool has_fp16;
-	bool has_precise_vsync_ts;
-	bool has_ubwc_stats;
-
-	bool has_vbif_clk_split;
-
-	u32 mdss_hw_block_size;
-	u32 mdss_count;
 	struct sde_mdss_base_cfg mdss[MAX_BLOCKS];
-
+	u32 mdss_hw_block_size;
 	u32 mdp_count;
 	struct sde_mdp_cfg mdp[MAX_BLOCKS];
-
-	/* uidle is a singleton */
-	struct sde_uidle_cfg uidle_cfg;
-
 	u32 ctl_count;
 	struct sde_ctl_cfg ctl[MAX_BLOCKS];
-
 	u32 sspp_count;
 	struct sde_sspp_cfg sspp[MAX_BLOCKS];
-
 	u32 mixer_count;
 	struct sde_lm_cfg mixer[MAX_BLOCKS];
 	u32 virtual_mixers_mask;
 
 	struct sde_dspp_top_cfg dspp_top;
-
 	u32 dspp_count;
 	struct sde_dspp_cfg dspp[MAX_BLOCKS];
-
 	u32 ds_count;
 	struct sde_ds_cfg ds[MAX_BLOCKS];
-
 	u32 pingpong_count;
 	struct sde_pingpong_cfg pingpong[MAX_BLOCKS];
-
 	u32 dsc_count;
 	struct sde_dsc_cfg dsc[MAX_BLOCKS];
-
 	u32 vdc_count;
 	struct sde_vdc_cfg vdc[MAX_BLOCKS];
-
 	u32 cdm_count;
 	struct sde_cdm_cfg cdm[MAX_BLOCKS];
-
+	u32 dnsc_blur_count;
+	struct sde_dnsc_blur_cfg dnsc_blur[MAX_BLOCKS];
 	u32 intf_count;
 	struct sde_intf_cfg intf[MAX_BLOCKS];
-
 	u32 wb_count;
 	struct sde_wb_cfg wb[MAX_BLOCKS];
-
 	u32 vbif_count;
 	struct sde_vbif_cfg vbif[MAX_BLOCKS];
+	u32 merge_3d_count;
+	struct sde_merge_3d_cfg merge_3d[MAX_BLOCKS];
+	u32 qdss_count;
+	struct sde_qdss_cfg qdss[MAX_BLOCKS];
+	u32 cwb_blk_off[MAX_CWB_BLOCKS];
+	u32 cwb_blk_stride;
+	u32 dcwb_count;
 
 	u32 reg_dma_count;
 	struct sde_reg_dma_cfg dma_cfg;
-
 	u32 ad_count;
 	u32 ltm_count;
 	u32 rc_count;
 	u32 spr_count;
 	u32 demura_count;
+	u32 demura_supported[SSPP_MAX][2];
 
-	u32 merge_3d_count;
-	struct sde_merge_3d_cfg merge_3d[MAX_BLOCKS];
+	/* Secure & Trusted UI */
+	bool trusted_vm_env;
+	u32 tvm_reg_count;
+	struct resource tvm_reg[MAX_REG_SIZE_ENTRIES];
+	u32 max_trusted_vm_displays;
+	u32 sui_block_xin_mask;
+	u32 sec_sid_mask_count;
+	u32 sec_sid_mask[MAX_BLOCKS];
+	u32 sui_supported_blendstage;
 
-	u32 qdss_count;
-	struct sde_qdss_cfg qdss[MAX_BLOCKS];
-
-	u32 dcwb_count;
-
-	/* Add additional block data structures here */
+	/* Limits */
+	u32 max_display_width;
+	u32 max_display_height;
+	u32 min_display_width;
+	u32 min_display_height;
+	u32 in_rot_maxheight;
+	u32 max_sspp_linewidth;
+	u32 vig_sspp_linewidth;
+	u32 scaling_linewidth;
+	u32 max_wb_linewidth;
+	u32 max_wb_linewidth_linear;
+	u32 max_dsc_width;
+	u32 max_mixer_width;
+	u32 max_mixer_blendstages;
 	u32 max_cwb;
 
+	/* Configs */
+	u32 vbif_qos_nlvl;
+	u32 qos_target_time_ns;
+	u32 macrotile_mode;
+	u32 pipe_order_type;
+	u32 csc_type;
+	u32 allowed_dsc_reservation_switch;
+	enum autorefresh_disable_sequence autorefresh_disable_seq;
+	struct sde_sc_cfg sc_cfg[SDE_SYS_CACHE_MAX];
+	DECLARE_BITMAP(sde_sys_cache_type_map, SDE_SYS_CACHE_MAX);
 	struct sde_perf_cfg perf;
+	struct sde_uidle_cfg uidle_cfg;
+	struct list_head irq_offset_list;
+	DECLARE_BITMAP(features, SDE_FEATURE_MAX);
+	bool has_line_insertion;
+
+	/* Supported Pixel Format Lists */
 	struct sde_format_extended *dma_formats;
-	struct sde_format_extended *cursor_formats;
 	struct sde_format_extended *vig_formats;
 	struct sde_format_extended *wb_formats;
+	struct sde_format_extended *wb_rot_formats;
 	struct sde_format_extended *virt_vig_formats;
 	struct sde_format_extended *inline_rot_formats;
 	struct sde_format_extended *inline_rot_restricted_formats;
+	struct sde_dnsc_blur_filter_info *dnsc_blur_filters;
+	u32 dnsc_blur_filter_count;
 
-	struct list_head irq_offset_list;
+	u32 ipcc_protocol_id;
+	u32 ipcc_client_phys_id;
+
+	enum sde_ppb_size_option ppb_sz_program;
+	u32 ppb_buf_max_lines;
 };
 
 struct sde_mdss_hw_cfg_handler {
@@ -1839,9 +2130,7 @@ struct sde_mdss_hw_cfg_handler {
 #define BLK_MDP(s) ((s)->mdp)
 #define BLK_CTL(s) ((s)->ctl)
 #define BLK_VIG(s) ((s)->vig)
-#define BLK_RGB(s) ((s)->rgb)
 #define BLK_DMA(s) ((s)->dma)
-#define BLK_CURSOR(s) ((s)->cursor)
 #define BLK_MIXER(s) ((s)->mixer)
 #define BLK_DSPP(s) ((s)->dspp)
 #define BLK_DS(s) ((s)->ds)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2021, The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2022,2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
@@ -136,14 +136,7 @@ static int cam_cre_mgr_process_cmd_io_buf_req(struct cam_cre_hw_mgr *hw_mgr,
 	struct   cam_buf_io_cfg *io_cfg_ptr = NULL;
 	struct   cam_cre_io_buf_info *acq_io_buf;
 
-	if (!ctx_data->cre_acquire.batch_size ||
-		(ctx_data->cre_acquire.batch_size > CRE_MAX_BATCH_SIZE)) {
-		CAM_ERR(CAM_CRE, "Invalid batch_size: %u ctx id: %u max_batch_size: %u",
-			ctx_data->cre_acquire.batch_size, ctx_data->ctx_id, CRE_MAX_BATCH_SIZE);
-		return -EINVAL;
-	}
-
-	io_cfg_ptr = (struct cam_buf_io_cfg *)((uint32_t *)&packet->payload +
+	io_cfg_ptr = (struct cam_buf_io_cfg *)((uint32_t *)&packet->payload_flex +
 			packet->io_configs_offset / 4);
 
 	cre_request = ctx_data->req_list[req_idx];
@@ -169,17 +162,6 @@ static int cam_cre_mgr_process_cmd_io_buf_req(struct cam_cre_hw_mgr *hw_mgr,
 			}
 
 			io_buf = cre_request->io_buf[i][j];
-
-			if (!acq_io_buf->num_planes ||
-				(acq_io_buf->num_planes > CAM_CRE_MAX_PLANES)) {
-				CAM_ERR(CAM_CRE,
-					"i %d j %d res_type %d Invalid num_planes: %u ctx id: %u max_planes: %u",
-					i, j, acq_io_buf->res_id, acq_io_buf->num_planes,
-					ctx_data->ctx_id, CAM_PACKET_MAX_PLANES);
-				cam_cre_free_io_config(cre_request);
-				return -EINVAL;
-			}
-
 			io_buf->num_planes = acq_io_buf->num_planes;
 			io_buf->resource_type = acq_io_buf->res_id;
 			io_buf->direction = acq_io_buf->direction;
@@ -1400,14 +1382,6 @@ static int cam_cre_mgr_process_io_cfg(struct cam_cre_hw_mgr *hw_mgr,
 				}
 			} else {
 				if (io_buf->fence != -1) {
-					if (k >= CAM_CTX_REQ_MAX) {
-						CAM_ERR(CAM_CRE,
-							"Couldn't update fence %d for out_res %d due to out_map_entries index %d greater than max %d",
-							io_buf->fence, io_buf->resource_type, k,
-							CAM_CTX_REQ_MAX);
-						rc = -EINVAL;
-						goto end;
-					}
 					prep_arg->out_map_entries[k].sync_id =
 						io_buf->fence;
 					k++;
@@ -1466,7 +1440,7 @@ static bool cam_cre_mgr_is_valid_inconfig(struct cam_packet *packet)
 	bool in_config_valid = false;
 	struct cam_buf_io_cfg *io_cfg_ptr = NULL;
 
-	io_cfg_ptr = (struct cam_buf_io_cfg *) ((uint32_t *) &packet->payload +
+	io_cfg_ptr = (struct cam_buf_io_cfg *) ((uint32_t *) &packet->payload_flex +
 					packet->io_configs_offset/4);
 
 	for (i = 0 ; i < packet->num_io_configs; i++)
@@ -1493,7 +1467,7 @@ static bool cam_cre_mgr_is_valid_outconfig(struct cam_packet *packet)
 	bool out_config_valid = false;
 	struct cam_buf_io_cfg *io_cfg_ptr = NULL;
 
-	io_cfg_ptr = (struct cam_buf_io_cfg *) ((uint32_t *) &packet->payload +
+	io_cfg_ptr = (struct cam_buf_io_cfg *) ((uint32_t *) &packet->payload_flex +
 					packet->io_configs_offset/4);
 
 	for (i = 0 ; i < packet->num_io_configs; i++)
@@ -1626,9 +1600,6 @@ static int cam_cre_get_acquire_info(struct cam_cre_hw_mgr *hw_mgr,
 		return -EFAULT;
 	}
 
-	if (cam_cre_validate_acquire_res_info(&ctx->cre_acquire))
-		return -EINVAL;
-
 	CAM_DBG(CAM_CRE, "top: %u %s %u %u %u",
 		ctx->cre_acquire.dev_type,
 		ctx->cre_acquire.dev_name,
@@ -1650,6 +1621,9 @@ static int cam_cre_get_acquire_info(struct cam_cre_hw_mgr *hw_mgr,
 		ctx->cre_acquire.out_res[i].height,
 		ctx->cre_acquire.out_res[i].format);
 	}
+
+	if (cam_cre_validate_acquire_res_info(&ctx->cre_acquire))
+		return -EINVAL;
 
 	return 0;
 }
@@ -2168,7 +2142,7 @@ static int cam_cre_process_generic_cmd_buffer(
 	cmd_generic_blob.io_buf_addr = io_buf_addr;
 
 	cmd_desc = (struct cam_cmd_buf_desc *)
-		((uint32_t *) &packet->payload + packet->cmd_buf_offset/4);
+		((uint32_t *) &packet->payload_flex + packet->cmd_buf_offset/4);
 
 	for (i = 0; i < packet->num_cmd_buf; i++) {
 		rc = cam_packet_util_validate_cmd_desc(&cmd_desc[i]);
@@ -2930,22 +2904,18 @@ static int cam_cre_create_debug_fs(void)
 {
 	struct dentry *dbgfileptr = NULL;
 	int rc = 0;
-	cre_hw_mgr->dentry = debugfs_create_dir("camera_cre",
-		NULL);
+
+	cre_hw_mgr->dentry = debugfs_create_dir("camera_cre", NULL);
 
 	if (!cre_hw_mgr->dentry) {
 		CAM_ERR(CAM_CRE, "failed to create dentry");
 		return -ENOMEM;
 	}
 
-	if (!debugfs_create_bool("dump_req_data_enable",
+	debugfs_create_bool("dump_req_data_enable",
 		0644,
 		cre_hw_mgr->dentry,
-		&cre_hw_mgr->dump_req_data_enable)) {
-		CAM_ERR(CAM_CRE,
-			"failed to create dump_enable_debug");
-		goto err;
-	}
+		&cre_hw_mgr->dump_req_data_enable);
 
 	dbgfileptr = debugfs_create_file("cre_debug_clk", 0644,
 		cre_hw_mgr->dentry, NULL, &cam_cre_debug_default_clk);
@@ -2956,10 +2926,8 @@ static int cam_cre_create_debug_fs(void)
 		else
 			rc = PTR_ERR(dbgfileptr);
 	}
-	return 0;
-err:
-	debugfs_remove_recursive(cre_hw_mgr->dentry);
-	return -ENOMEM;
+	return rc;
+
 }
 
 int cam_cre_hw_mgr_init(struct device_node *of_node, void *hw_mgr,

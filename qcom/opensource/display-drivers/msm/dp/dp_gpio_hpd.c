@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
+ * Copyright (c) 2021-2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
  */
 
@@ -10,6 +11,10 @@
 #include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/gpio/consumer.h>
+#include <linux/version.h>
+#if (KERNEL_VERSION(6, 3, 0) <= LINUX_VERSION_CODE)
+#include <linux/pinctrl/consumer.h>
+#endif
 #include <linux/sde_io_util.h>
 #include <linux/of_gpio.h>
 #include "dp_gpio_hpd.h"
@@ -218,9 +223,17 @@ struct dp_hpd *dp_gpio_hpd_get(struct device *dev,
 	const char *hpd_gpio_name = "qcom,dp-hpd-gpio";
 	struct dp_gpio_hpd_private *gpio_hpd;
 	struct dp_pinctrl pinctrl = {0};
+	unsigned int gpio;
 
 	if (!dev || !cb) {
 		DP_ERR("invalid device\n");
+		rc = -EINVAL;
+		goto error;
+	}
+
+	gpio = of_get_named_gpio(dev->of_node, hpd_gpio_name, 0);
+	if (!gpio_is_valid(gpio)) {
+		DP_DEBUG("%s gpio not specified\n", hpd_gpio_name);
 		rc = -EINVAL;
 		goto error;
 	}
@@ -245,14 +258,7 @@ struct dp_hpd *dp_gpio_hpd_get(struct device *dev,
 		}
 	}
 
-	gpio_hpd->gpio_cfg.gpio = of_get_named_gpio(dev->of_node,
-		hpd_gpio_name, 0);
-	if (!gpio_is_valid(gpio_hpd->gpio_cfg.gpio)) {
-		DP_ERR("%s gpio not specified\n", hpd_gpio_name);
-		rc = -EINVAL;
-		goto gpio_error;
-	}
-
+	gpio_hpd->gpio_cfg.gpio = gpio;
 	strlcpy(gpio_hpd->gpio_cfg.gpio_name, hpd_gpio_name,
 		sizeof(gpio_hpd->gpio_cfg.gpio_name));
 	gpio_hpd->gpio_cfg.value = 0;

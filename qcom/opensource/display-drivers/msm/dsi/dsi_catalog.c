@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/errno.h>
@@ -75,6 +75,7 @@ static void dsi_catalog_cmn_init(struct dsi_ctrl_hw *ctrl,
 	case DSI_CTRL_VERSION_2_5:
 	case DSI_CTRL_VERSION_2_6:
 	case DSI_CTRL_VERSION_2_7:
+	case DSI_CTRL_VERSION_2_8:
 		ctrl->ops.phy_reset_config = dsi_ctrl_hw_22_phy_reset_config;
 		ctrl->ops.config_clk_gating = dsi_ctrl_hw_22_config_clk_gating;
 		ctrl->ops.setup_lane_map = dsi_ctrl_hw_22_setup_lane_map;
@@ -97,6 +98,8 @@ static void dsi_catalog_cmn_init(struct dsi_ctrl_hw *ctrl,
 			dsi_ctrl_hw_22_reset_trigger_controls;
 		ctrl->ops.log_line_count = dsi_ctrl_hw_22_log_line_count;
 		ctrl->ops.splitlink_cmd_setup = dsi_ctrl_hw_22_configure_splitlink;
+		ctrl->ops.setup_misr = dsi_ctrl_hw_22_setup_misr;
+		ctrl->ops.collect_misr = dsi_ctrl_hw_22_collect_misr;
 		break;
 	default:
 		break;
@@ -108,7 +111,7 @@ static void dsi_catalog_cmn_init(struct dsi_ctrl_hw *ctrl,
  * @ctrl:        Pointer to DSI controller hw object.
  * @version:     DSI controller version.
  * @index:       DSI controller instance ID.
- * @phy_isolation_enabled:       DSI controller works isolated from phy.
+ * @phy_pll_bypass:              DSI PHY/PLL drivers bypass HW access.
  * @null_insertion_enabled:      DSI controller inserts null packet.
  *
  * This function setups the catalog information in the dsi_ctrl_hw object.
@@ -117,7 +120,7 @@ static void dsi_catalog_cmn_init(struct dsi_ctrl_hw *ctrl,
  */
 int dsi_catalog_ctrl_setup(struct dsi_ctrl_hw *ctrl,
 		   enum dsi_ctrl_version version, u32 index,
-		   bool phy_isolation_enabled, bool null_insertion_enabled)
+		   bool phy_pll_bypass, bool null_insertion_enabled)
 {
 	int rc = 0;
 
@@ -140,14 +143,15 @@ int dsi_catalog_ctrl_setup(struct dsi_ctrl_hw *ctrl,
 	case DSI_CTRL_VERSION_2_2:
 	case DSI_CTRL_VERSION_2_3:
 	case DSI_CTRL_VERSION_2_4:
-		ctrl->phy_isolation_enabled = phy_isolation_enabled;
+		ctrl->phy_pll_bypass = phy_pll_bypass;
 		dsi_catalog_cmn_init(ctrl, version);
 		break;
 	case DSI_CTRL_VERSION_2_5:
 	case DSI_CTRL_VERSION_2_6:
 	case DSI_CTRL_VERSION_2_7:
+	case DSI_CTRL_VERSION_2_8:
 		ctrl->widebus_support = true;
-		ctrl->phy_isolation_enabled = phy_isolation_enabled;
+		ctrl->phy_pll_bypass = phy_pll_bypass;
 		dsi_catalog_cmn_init(ctrl, version);
 		break;
 	default:
@@ -191,6 +195,7 @@ static void dsi_catalog_phy_3_0_init(struct dsi_phy_hw *phy)
 	phy->ops.dyn_refresh_ops.dyn_refresh_trigger_sel = NULL;
 	phy->ops.dyn_refresh_ops.cache_phy_timings =
 		dsi_phy_hw_v3_0_cache_phy_timings;
+	phy->ops.phy_idle_off = NULL;
 }
 
 /**
@@ -231,6 +236,37 @@ static void dsi_catalog_phy_4_0_init(struct dsi_phy_hw *phy)
 		dsi_phy_hw_v4_0_cache_phy_timings;
 	phy->ops.set_continuous_clk = dsi_phy_hw_v4_0_set_continuous_clk;
 	phy->ops.commit_phy_timing = dsi_phy_hw_v4_0_commit_phy_timing;
+	phy->ops.phy_idle_off = NULL;
+}
+
+/**
+ * dsi_catalog_phy_5_0_init() - catalog init for DSI PHY 7nm
+ */
+static void dsi_catalog_phy_5_0_init(struct dsi_phy_hw *phy)
+{
+	phy->ops.regulator_enable = NULL;
+	phy->ops.regulator_disable = NULL;
+	phy->ops.enable = dsi_phy_hw_v5_0_enable;
+	phy->ops.disable = dsi_phy_hw_v5_0_disable;
+	phy->ops.calculate_timing_params = dsi_phy_hw_calculate_timing_params;
+	phy->ops.ulps_ops.wait_for_lane_idle = dsi_phy_hw_v5_0_wait_for_lane_idle;
+	phy->ops.ulps_ops.ulps_request = dsi_phy_hw_v5_0_ulps_request;
+	phy->ops.ulps_ops.ulps_exit = dsi_phy_hw_v5_0_ulps_exit;
+	phy->ops.ulps_ops.get_lanes_in_ulps = dsi_phy_hw_v5_0_get_lanes_in_ulps;
+	phy->ops.ulps_ops.is_lanes_in_ulps = dsi_phy_hw_v5_0_is_lanes_in_ulps;
+	phy->ops.phy_timing_val = dsi_phy_hw_timing_val_v5_0;
+	phy->ops.phy_lane_reset = dsi_phy_hw_v5_0_lane_reset;
+	phy->ops.toggle_resync_fifo = dsi_phy_hw_v5_0_toggle_resync_fifo;
+	phy->ops.reset_clk_en_sel = dsi_phy_hw_v5_0_reset_clk_en_sel;
+
+	phy->ops.dyn_refresh_ops.dyn_refresh_config = dsi_phy_hw_v5_0_dyn_refresh_config;
+	phy->ops.dyn_refresh_ops.dyn_refresh_pipe_delay = dsi_phy_hw_v5_0_dyn_refresh_pipe_delay;
+	phy->ops.dyn_refresh_ops.dyn_refresh_helper = dsi_phy_hw_v5_0_dyn_refresh_helper;
+	phy->ops.dyn_refresh_ops.dyn_refresh_trigger_sel = dsi_phy_hw_v5_0_dyn_refresh_trigger_sel;
+	phy->ops.dyn_refresh_ops.cache_phy_timings = dsi_phy_hw_v5_0_cache_phy_timings;
+	phy->ops.set_continuous_clk = dsi_phy_hw_v5_0_set_continuous_clk;
+	phy->ops.commit_phy_timing = dsi_phy_hw_v5_0_commit_phy_timing;
+	phy->ops.phy_idle_off = dsi_phy_hw_v5_0_phy_idle_off;
 }
 
 /**
@@ -270,8 +306,10 @@ int dsi_catalog_phy_setup(struct dsi_phy_hw *phy,
 	case DSI_PHY_VERSION_4_2:
 	case DSI_PHY_VERSION_4_3:
 	case DSI_PHY_VERSION_4_3_2:
-	case DSI_PHY_VERSION_5_2:
 		dsi_catalog_phy_4_0_init(phy);
+		break;
+	case DSI_PHY_VERSION_5_2:
+		dsi_catalog_phy_5_0_init(phy);
 		break;
 	default:
 		return -ENOTSUPP;
@@ -287,12 +325,22 @@ int dsi_catalog_phy_pll_setup(struct dsi_phy_hw *phy, u32 pll_ver)
 	if (pll_ver >= DSI_PLL_VERSION_UNKNOWN) {
 		DSI_ERR("Unsupported version: %d\n", pll_ver);
 		return -EOPNOTSUPP;
+	} else if (phy->phy_pll_bypass) {
+		return 0;
 	}
 
 	switch (pll_ver) {
 	case DSI_PLL_VERSION_5NM:
 		phy->ops.configure = dsi_pll_5nm_configure;
 		phy->ops.pll_toggle = dsi_pll_5nm_toggle;
+		break;
+	case DSI_PLL_VERSION_4NM:
+		phy->ops.configure = dsi_pll_4nm_configure;
+		phy->ops.pll_toggle = dsi_pll_4nm_toggle;
+		break;
+	case DSI_PLL_VERSION_10NM:
+		phy->ops.configure = dsi_pll_10nm_configure;
+		phy->ops.pll_toggle = dsi_pll_10nm_toggle;
 		break;
 	default:
 		phy->ops.configure = NULL;

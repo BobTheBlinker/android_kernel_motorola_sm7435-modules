@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2014-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt)	"[drm:%s:%d]: " fmt, __func__, __LINE__
@@ -286,7 +287,7 @@ static int sde_power_parse_dt_clock(struct platform_device *pdev,
 			mp->clk_config[i].type = DSS_CLK_MMRM;
 			mp->clk_config[i].mmrm.clk_id = clock_mmrm;
 		}
-		pr_debug("clk[%d]:%d mmrm:%d rate:%d name:%s dev:%s\n",
+		pr_debug("clk[%d] mmrm:%d rate:%d name:%s dev:%s\n",
 			i, clock_mmrm, clock_rate, clock_name,
 			pdev->name ? pdev->name : "<unknown>");
 
@@ -684,8 +685,6 @@ int sde_power_resource_init(struct platform_device *pdev,
 	/* event init must happen before mmrm register */
 	INIT_LIST_HEAD(&phandle->event_list);
 
-	mutex_init(&phandle->phandle_lock);
-
 	rc = sde_power_parse_dt_clock(pdev, mp);
 	if (rc) {
 		pr_err("device clock parsing failed\n");
@@ -734,6 +733,8 @@ int sde_power_resource_init(struct platform_device *pdev,
 	phandle->rsc_client = NULL;
 	phandle->rsc_client_init = false;
 
+	mutex_init(&phandle->phandle_lock);
+
 	return rc;
 
 bus_err:
@@ -745,16 +746,12 @@ clkmmrm_err:
 clkget_err:
 	msm_dss_get_vreg(&pdev->dev, mp->vreg_config, mp->num_vreg, 0);
 vreg_err:
-	if (mp->vreg_config) {
+	if (mp->vreg_config)
 		devm_kfree(&pdev->dev, mp->vreg_config);
-		mp->vreg_config = NULL;
-	}
 	mp->num_vreg = 0;
 parse_vreg_err:
-	if (mp->clk_config) {
+	if (mp->clk_config)
 		devm_kfree(&pdev->dev, mp->clk_config);
-		mp->clk_config = NULL;
-	}
 	mp->num_clk = 0;
 end:
 	return rc;
@@ -1026,7 +1023,7 @@ int sde_power_clk_set_rate(struct sde_power_handle *phandle, char *clock_name,
 
 			mp->clk_config[i].rate = rate;
 			mp->clk_config[i].mmrm.flags = flags;
-			pr_debug("set rate clk:%s rate:%lu flags:0x%x\n",
+			pr_debug("set rate clk:%s rate:%llu flags:0x%x\n",
 				clock_name, rate, flags);
 
 			SDE_ATRACE_BEGIN("sde_clk_set_rate");

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
 * Copyright (c) 2020, The Linux Foundation. All rights reserved.
+* Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
 */
 
 #include "gsihal_i.h"
@@ -19,7 +20,7 @@ int gsihal_init(enum gsi_ver gsi_ver, void __iomem *base)
 		GSIDBG("gsihal already initialized\n");
 		if (base != gsihal_ctx->base) {
 			GSIERR(
-				"base address of early init is differnet (%pK - %pK)\n"
+				"base address of early init is differnet.\n"
 			);
 			WARN_ON(1);
 		}
@@ -66,10 +67,6 @@ bail_err_exit:
 void gsihal_destroy(void)
 {
 	GSIDBG("Entry\n");
-	if (!gsihal_ctx) {
-		GSIERR("gsihal_ctx not allocated.\n");
-		return;
-	}
 	kfree(gsihal_ctx);
 	gsihal_ctx = NULL;
 }

@@ -25,8 +25,7 @@
 /* Additional internal-use only BO flags: */
 #define MSM_BO_STOLEN        0x10000000    /* try to use stolen/splash memory */
 #define MSM_BO_KEEPATTRS     0x20000000    /* keep h/w bus attributes */
-#define MSM_BO_SKIPSYNC      0x40000000    /* skip dmabuf cpu sync */
-#define MSM_BO_EXTBUF        0x80000000    /* indicate BO is an import buffer */
+#define MSM_BO_EXTBUF        0x40000000    /* indicate BO is an import buffer */
 
 struct msm_gem_object;
 
@@ -158,13 +157,6 @@ static inline bool is_active(struct msm_gem_object *msm_obj)
 	return msm_obj->gpu != NULL;
 }
 
-static inline bool is_purgeable(struct msm_gem_object *msm_obj)
-{
-	WARN_ON(!mutex_is_locked(&msm_obj->base.dev->struct_mutex));
-	return (msm_obj->madv == MSM_MADV_DONTNEED) && msm_obj->sgt &&
-			!msm_obj->base.dma_buf && !msm_obj->base.import_attach;
-}
-
 static inline bool is_vunmapable(struct msm_gem_object *msm_obj)
 {
 	return (msm_obj->vmap_count == 0) && msm_obj->vaddr;
@@ -186,7 +178,6 @@ enum msm_gem_lock {
 	OBJ_LOCK_SHRINKER,
 };
 
-void msm_gem_purge(struct drm_gem_object *obj, enum msm_gem_lock subclass);
 void msm_gem_vunmap(struct drm_gem_object *obj, enum msm_gem_lock subclass);
 
 /* Created per submit-ioctl, to track bo's and cmdstream bufs, etc,

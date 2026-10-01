@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -60,7 +60,8 @@ enum sde_reg_dma_read_sel {
  * @LTM_INIT: LTM INIT
  * @LTM_ROI: LTM ROI
  * @LTM_VLUT: LTM VLUT
- * @RC_DATA: Rounded corner data
+ * @RC_MASK_CFG: Rounded corner config and mask
+ * @RC_PU_CFG: Rounded corner partial update
  * @DEMURA_CFG: Demura feature
  * @REG_DMA_FEATURES_MAX: invalid selection
  */
@@ -78,12 +79,15 @@ enum sde_reg_dma_features {
 	HSIC,
 	GC,
 	SPR_INIT,
+	SPR_UDC,
 	SPR_PU_CFG,
 	LTM_INIT,
 	LTM_ROI,
 	LTM_VLUT,
-	RC_DATA,
+	RC_MASK_CFG,
+	RC_PU_CFG,
 	DEMURA_CFG,
+	DEMURA_CFG0_PARAM2,
 	REG_DMA_FEATURES_MAX,
 };
 
@@ -102,16 +106,19 @@ enum sde_reg_dma_queue {
 #define LUTBUS_TABLE_SELECT_MAX 2
 #define LUTBUS_IGC_TRANS_SIZE 3
 #define LUTBUS_GAMUT_TRANS_SIZE 6
+#define LUTBUS_SIXZONE_TRANS_SIZE 5
 
 /**
  * enum sde_reg_dma_lutbus_block - block select values for lutbus op
  * @LUTBUS_BLOCK_IGC: select IGC block
  * @LUTBUS_BLOCK_GAMUT: select GAMUT block
+ * @LUTBUS_BLOCK_SIXZONE: select SIXZONE block
  * @LUTBUS_BLOCK_MAX: invalid selection
  */
 enum sde_reg_dma_lutbus_block {
 	LUTBUS_BLOCK_IGC = 0,
 	LUTBUS_BLOCK_GAMUT,
+	LUTBUS_BLOCK_SIXZONE = 3,
 	LUTBUS_BLOCK_MAX,
 };
 
@@ -212,6 +219,8 @@ enum sde_reg_dma_blk {
 	LTM1 = BIT(19),
 	DMA4  = BIT(20),
 	DMA5  = BIT(21),
+	LTM2 = BIT(22),
+	LTM3 = BIT(23),
 	MDSS  = BIT(31)
 };
 

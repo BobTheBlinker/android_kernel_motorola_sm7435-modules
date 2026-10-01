@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -8,7 +8,7 @@
 #include <linux/completion.h>
 #include <linux/delay.h>
 #include <drm/drm_fixed.h>
-#include <linux/usb/dwc3-msm.h>
+#include <linux/version.h>
 
 #include "dp_ctrl.h"
 #include "dp_debug.h"
@@ -198,7 +198,7 @@ static void dp_ctrl_wait4video_ready(struct dp_ctrl_private *ctrl)
 	if (!wait_for_completion_timeout(&ctrl->video_comp, HZ / 2))
 		DP_WARN("SEND_VIDEO time out\n");
 	else
-		DP_INFO("SEND_VIDEO triggered\n");
+		DP_DEBUG("SEND_VIDEO triggered\n");
 }
 
 static int dp_ctrl_update_sink_vx_px(struct dp_ctrl_private *ctrl)
@@ -374,7 +374,11 @@ static int dp_ctrl_link_training_1(struct dp_ctrl_private *ctrl)
 		if (ret)
 			break;
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+		drm_dp_link_train_clock_recovery_delay(ctrl->aux->drm_aux, ctrl->panel->dpcd);
+#else
 		drm_dp_link_train_clock_recovery_delay(ctrl->panel->dpcd);
+#endif
 
 		ret = dp_ctrl_read_link_status(ctrl, link_status);
 		if (ret)
@@ -387,7 +391,7 @@ static int dp_ctrl_link_training_1(struct dp_ctrl_private *ctrl)
 			break;
 
 		if (ctrl->link->phy_params.v_level == ctrl->link->phy_params.max_v_level) {
-			pr_err_ratelimited("max v_level reached\n");
+			DP_ERR_RATELIMITED_V("max v_level reached\n");
 			break;
 		}
 
@@ -459,7 +463,11 @@ static int dp_ctrl_link_rate_down_shift(struct dp_ctrl_private *ctrl)
 static void dp_ctrl_clear_training_pattern(struct dp_ctrl_private *ctrl)
 {
 	dp_ctrl_update_sink_pattern(ctrl, 0);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	drm_dp_link_train_channel_eq_delay(ctrl->aux->drm_aux, ctrl->panel->dpcd);
+#else
 	drm_dp_link_train_channel_eq_delay(ctrl->panel->dpcd);
+#endif
 }
 
 static int dp_ctrl_link_training_2(struct dp_ctrl_private *ctrl)
@@ -505,7 +513,11 @@ static int dp_ctrl_link_training_2(struct dp_ctrl_private *ctrl)
 		if (ret)
 			break;
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+		drm_dp_link_train_channel_eq_delay(ctrl->aux->drm_aux, ctrl->panel->dpcd);
+#else
 		drm_dp_link_train_channel_eq_delay(ctrl->panel->dpcd);
+#endif
 
 		ret = dp_ctrl_read_link_status(ctrl, link_status);
 		if (ret)
@@ -635,6 +647,9 @@ static void dp_ctrl_set_clock_rate(struct dp_ctrl_private *ctrl,
 	u32 num = ctrl->parser->mp[clk_type].num_clk;
 	struct dss_clk *cfg = ctrl->parser->mp[clk_type].clk_config;
 
+	/* convert to HZ for byte2 ops */
+	rate *= ctrl->pll->clk_factor;
+
 	while (num && strcmp(cfg->clk_name, name)) {
 		num--;
 		cfg++;
@@ -724,80 +739,6 @@ end:
 	ctrl->training_2_pattern = pattern;
 }
 
-static int dp_ctrl_set_usb_redriver_eq(struct dp_ctrl_private *ctrl)
-{
-	struct device_node *np;
-	struct device_node *usb_node;
-	struct platform_device *usb_pdev;
-
-	if (!ctrl || !ctrl->dev) {
-		DP_ERR("invalid args\n");
-		return -EINVAL;
-	}
-
-	np = ctrl->dev->of_node;
-
-	usb_node = of_parse_phandle(np, "usb-controller", 0);
-	if (!usb_node) {
-		DP_ERR("unable to get usb node\n");
-		return -EINVAL;
-	}
-
-	usb_pdev = of_find_device_by_node(usb_node);
-	if (!usb_pdev) {
-		of_node_put(usb_node);
-		DP_ERR("unable to get usb pdev\n");
-		return -EINVAL;
-	}
-
-	dwc3_msm_set_usb_redriver_eq(&usb_pdev->dev);
-
-	of_node_put(usb_node);
-	platform_device_put(usb_pdev);
-
-	return 0;
-}
-
-static bool is_allow_downgrade(u8 *monitor_name, int type_index)
-{
-	char *hub_monitor_blacklist[] = {"LEN T34w-20","LG Ultra HD",NULL};
-	char *dp_monitor_blacklist[] = {"P27h-30","P32p-30","Y27q-20",NULL};
-	bool is_allow = false;
-	char **monitor_list;
-
-	if(type_index == 0)
-		monitor_list = hub_monitor_blacklist;
-	else
-		monitor_list = dp_monitor_blacklist;
-
-	while(*monitor_list != NULL) {
-		DP_INFO("downgrade:value:%s\n", *monitor_list);
-		if(strstr(monitor_name, *monitor_list) != NULL){
-			is_allow = true;
-			DP_INFO("match the monitor name=%s\n", monitor_name);
-			break;
-		}
-		monitor_list++;
-	}
-
-	return is_allow;
-}
-
-static int update_redriver_seq(struct dp_ctrl_private *ctrl)
-{
-
-	DP_INFO("link_params.bw_code=%d,lane_count =%d, phy_params.v_level=%d,phy_params.p_level=%d\n",
-		ctrl->link->link_params.bw_code,ctrl->link->link_params.lane_count, ctrl->link->phy_params.v_level, ctrl->link->phy_params.p_level);
-	if (ctrl->link->link_params.bw_code == DP_LINK_BW_8_1 &&
-		ctrl->link->link_params.lane_count == 2 &&
-		ctrl->link->phy_params.v_level == 0 &&
-		ctrl->link->phy_params.p_level == 0) {
-			dp_ctrl_set_usb_redriver_eq(ctrl);
-	}
-
-	return 0;
-}
-
 static int dp_ctrl_link_setup(struct dp_ctrl_private *ctrl, bool shallow)
 {
 	int rc = -EINVAL;
@@ -812,30 +753,8 @@ static int dp_ctrl_link_setup(struct dp_ctrl_private *ctrl, bool shallow)
 	catalog->phy_lane_cfg(catalog, ctrl->orientation,
 				link_params->lane_count);
 
-	if (ctrl->parser->dp_downgrade &&
-		link_params->bw_code == DP_LINK_BW_8_1 &&
-		link_params->lane_count == 2 &&
-		is_allow_downgrade(ctrl->panel->edid_ctrl->monitor_name, 0)) {
-
-		ctrl->initial_bw_code = DP_LINK_BW_5_4;
-		dp_ctrl_link_rate_down_shift(ctrl);
-		downgrade = true;
-		DP_INFO("downgrade to DP_LINK_BW_5_4\n");
-	}
-
-	if (ctrl->parser->dp_downgrade &&
-		link_params->bw_code == DP_LINK_BW_8_1 &&
-		link_params->lane_count == 4 &&
-		is_allow_downgrade(ctrl->panel->edid_ctrl->monitor_name, 1)) {
-
-		ctrl->initial_bw_code = DP_LINK_BW_5_4;
-		dp_ctrl_link_rate_down_shift(ctrl);
-		downgrade = true;
-		DP_INFO("downgrade to DP_LINK_BW_5_4\n");
-	}
-
 	while (1) {
-		DP_INFO("bw_code=%d, lane_count=%d\n",
+		DP_DEBUG("bw_code=%d, lane_count=%d\n",
 			link_params->bw_code, link_params->lane_count);
 
 		rc = dp_ctrl_enable_link_clock(ctrl);
@@ -859,10 +778,9 @@ static int dp_ctrl_link_setup(struct dp_ctrl_private *ctrl, bool shallow)
 		dp_ctrl_select_training_pattern(ctrl, downgrade);
 
 		rc = dp_ctrl_setup_main_link(ctrl);
-		if (!rc) {
-			update_redriver_seq(ctrl);
+		if (!rc)
 			break;
-		}
+
 		/*
 		 * Shallow means link training failure is not important.
 		 * If it fails, we still keep the link clocks on.
@@ -1086,7 +1004,6 @@ static int dp_ctrl_link_maintenance(struct dp_ctrl *dp_ctrl)
 	if (atomic_read(&ctrl->aborted))
 		goto end;
 
-	DP_INFO("stream_count=%d\n", ctrl->stream_count);
 	ctrl->aux->state |= DP_STATE_LINK_MAINTENANCE_STARTED;
 	ret = dp_ctrl_setup_main_link(ctrl);
 	ctrl->aux->state &= ~DP_STATE_LINK_MAINTENANCE_STARTED;
@@ -1212,7 +1129,7 @@ static void dp_ctrl_mst_calculate_rg(struct dp_ctrl_private *ctrl,
 
 	lclk = drm_dp_bw_code_to_link_rate(ctrl->link->link_params.bw_code);
 	if (panel->pinfo.comp_info.enabled)
-		bpp = DSC_BPP(panel->pinfo.comp_info.dsc_info.config);
+		bpp = panel->pinfo.comp_info.tgt_bpp;
 
 	/* min_slot_cnt */
 	numerator = pclk * bpp * 64 * 1000;
@@ -1323,15 +1240,24 @@ static void dp_ctrl_mst_stream_setup(struct dp_ctrl_private *ctrl,
 			lanes, bw_code, x_int, y_frac_enum);
 }
 
-static void dp_ctrl_dsc_setup(struct dp_ctrl_private *ctrl)
+static void dp_ctrl_dsc_setup(struct dp_ctrl_private *ctrl, struct dp_panel *panel)
 {
 	int rlen;
 	u32 dsc_enable;
+	struct dp_panel_info *pinfo = &panel->pinfo;
 
 	if (!ctrl->fec_mode)
 		return;
 
-	dsc_enable = ctrl->dsc_mode ? 1 : 0;
+	/* Set DP_DSC_ENABLE DPCD register if compression is enabled for SST monitor.
+	 * Set DP_DSC_ENABLE DPCD register if compression is enabled for
+	 * atleast 1 of the MST monitor.
+	 */
+	dsc_enable = (pinfo->comp_info.enabled == true) ? 1 : 0;
+
+	if (ctrl->mst_mode && (panel->stream_id == DP_STREAM_1) && !dsc_enable)
+		return;
+
 	rlen = drm_dp_dpcd_writeb(ctrl->aux->drm_aux, DP_DSC_ENABLE,
 			dsc_enable);
 	if (rlen < 1)
@@ -1360,6 +1286,7 @@ static int dp_ctrl_stream_on(struct dp_ctrl *dp_ctrl, struct dp_panel *panel)
 		return rc;
 	}
 
+	panel->pclk_on = true;
 	rc = panel->hw_cfg(panel, true);
 	if (rc)
 		return rc;
@@ -1380,11 +1307,12 @@ static int dp_ctrl_stream_on(struct dp_ctrl *dp_ctrl, struct dp_panel *panel)
 	ctrl->stream_count++;
 
 	link_ready = ctrl->catalog->mainlink_ready(ctrl->catalog);
-	DP_INFO("mainlink %s\n", link_ready ? "READY" : "NOT READY");
+	DP_DEBUG("mainlink %s\n", link_ready ? "READY" : "NOT READY");
 
 	/* wait for link training completion before fec config as per spec */
 	dp_ctrl_fec_setup(ctrl);
-	dp_ctrl_dsc_setup(ctrl);
+	dp_ctrl_dsc_setup(ctrl, panel);
+	panel->sink_crc_enable(panel, true);
 
 	return rc;
 }
@@ -1449,6 +1377,7 @@ static void dp_ctrl_stream_off(struct dp_ctrl *dp_ctrl, struct dp_panel *panel)
 
 	panel->hw_cfg(panel, false);
 
+	panel->pclk_on = false;
 	dp_ctrl_disable_stream_clocks(ctrl, panel);
 	ctrl->stream_count--;
 }
@@ -1492,7 +1421,7 @@ static int dp_ctrl_on(struct dp_ctrl *dp_ctrl, bool mst_mode,
 			ctrl->panel->link_info.num_lanes;
 	}
 
-	DP_INFO("bw_code=%d, lane_count=%d\n",
+	DP_DEBUG("bw_code=%d, lane_count=%d\n",
 		ctrl->link->link_params.bw_code,
 		ctrl->link->link_params.lane_count);
 
@@ -1557,14 +1486,14 @@ static void dp_ctrl_isr(struct dp_ctrl *dp_ctrl)
 {
 	struct dp_ctrl_private *ctrl;
 
-	SDE_EVT32_EXTERNAL(SDE_EVTLOG_FUNC_ENTRY);
 	if (!dp_ctrl)
 		return;
 
 	ctrl = container_of(dp_ctrl, struct dp_ctrl_private, dp_ctrl);
 
 	ctrl->catalog->get_interrupt(ctrl->catalog);
-	SDE_EVT32_EXTERNAL(ctrl->catalog->isr);
+	SDE_EVT32_EXTERNAL(ctrl->catalog->isr, ctrl->catalog->isr3, ctrl->catalog->isr5,
+			ctrl->catalog->isr6);
 
 	if (ctrl->catalog->isr & DP_CTRL_INTR_READY_FOR_VIDEO)
 		dp_ctrl_video_ready(ctrl);
@@ -1577,7 +1506,6 @@ static void dp_ctrl_isr(struct dp_ctrl *dp_ctrl)
 
 	if (ctrl->catalog->isr5 & DP_CTRL_INTR_MST_DP1_VCPF_SENT)
 		dp_ctrl_idle_patterns_sent(ctrl);
-	SDE_EVT32_EXTERNAL(SDE_EVTLOG_FUNC_EXIT);
 }
 
 void dp_ctrl_set_sim_mode(struct dp_ctrl *dp_ctrl, bool en)
@@ -1590,6 +1518,30 @@ void dp_ctrl_set_sim_mode(struct dp_ctrl *dp_ctrl, bool en)
 	ctrl = container_of(dp_ctrl, struct dp_ctrl_private, dp_ctrl);
 	ctrl->sim_mode = en;
 	DP_INFO("sim_mode=%d\n", ctrl->sim_mode);
+}
+
+int dp_ctrl_setup_misr(struct dp_ctrl *dp_ctrl)
+{
+	struct dp_ctrl_private *ctrl;
+
+	if (!dp_ctrl)
+		return -EINVAL;
+
+	ctrl = container_of(dp_ctrl, struct dp_ctrl_private, dp_ctrl);
+
+	return ctrl->catalog->setup_misr(ctrl->catalog);
+}
+
+int dp_ctrl_read_misr(struct dp_ctrl *dp_ctrl, struct dp_misr40_data *data)
+{
+	struct dp_ctrl_private *ctrl;
+
+	if (!dp_ctrl)
+		return -EINVAL;
+
+	ctrl = container_of(dp_ctrl, struct dp_ctrl_private, dp_ctrl);
+
+	return ctrl->catalog->read_misr(ctrl->catalog, data);
 }
 
 struct dp_ctrl *dp_ctrl_get(struct dp_ctrl_in *in)
@@ -1642,6 +1594,8 @@ struct dp_ctrl *dp_ctrl_get(struct dp_ctrl_in *in)
 	dp_ctrl->stream_pre_off = dp_ctrl_stream_pre_off;
 	dp_ctrl->set_mst_channel_info = dp_ctrl_set_mst_channel_info;
 	dp_ctrl->set_sim_mode = dp_ctrl_set_sim_mode;
+	dp_ctrl->setup_misr = dp_ctrl_setup_misr;
+	dp_ctrl->read_misr = dp_ctrl_read_misr;
 
 	return dp_ctrl;
 error:

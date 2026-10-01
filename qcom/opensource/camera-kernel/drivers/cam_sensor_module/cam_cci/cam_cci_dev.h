@@ -138,7 +138,7 @@ struct cam_cci_master_info {
 	atomic_t done_pending[NUM_QUEUES];
 	spinlock_t lock_q[NUM_QUEUES];
 	struct semaphore master_sem;
-	spinlock_t freq_cnt_lock;
+	struct mutex freq_cnt_lock;
 	uint16_t freq_ref_cnt;
 	bool is_initilized;
 };
@@ -306,11 +306,6 @@ irqreturn_t cam_cci_irq(int irq_num, void *data);
 struct v4l2_subdev *cam_cci_get_subdev(int cci_dev_index);
 void cam_cci_dump_registers(struct cci_device *cci_dev,
 		enum cci_i2c_master_t master, enum cci_i2c_queue_t queue);
-
-#ifdef CONFIG_CCI_DEBUG_INTF
-int cam_cci_debug_sub_module_init(void);
-void cam_cci_debug_sub_module_exit(void);
-#endif
 
 /**
  * @brief : API to register CCI hw to platform framework.

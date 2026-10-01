@@ -1,12 +1,18 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _DP_CATALOG_H_
 #define _DP_CATALOG_H_
 
+#include <linux/version.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+#include <drm/display/drm_dp_helper.h>
+#else
 #include <drm/drm_dp_helper.h>
+#endif
 #include <drm/sde_drm.h>
 
 #include "dp_parser.h"
@@ -27,9 +33,22 @@
 #define DP_INTR_IDLE_PATTERN_SENT	BIT(3)
 #define DP_INTR_FRAME_END		BIT(6)
 #define DP_INTR_CRC_UPDATED		BIT(9)
+#define DP_INTR_SST_FIFO_UNDERFLOW	BIT(28)
 
 #define DP_INTR_MST_DP0_VCPF_SENT	BIT(0)
 #define DP_INTR_MST_DP1_VCPF_SENT	BIT(3)
+
+#define DP_INTR_SST_ML_FIFO_OVERFLOW	BIT(12)
+#define DP_INTR_MST0_ML_FIFO_OVERFLOW	BIT(15)
+#define DP_INTR_MST1_ML_FIFO_OVERFLOW	BIT(18)
+#define DP_INTR_DP1_FRAME_END		BIT(21)
+#define DP_INTR_SDP0_COLLISION		BIT(24)
+#define DP_INTR_SDP1_COLLISION		BIT(27)
+
+#define DP_INTR_DP0_BACKPRESSURE_ERROR	(BIT(1) | BIT(0))
+#define DP_INTR_DP1_BACKPRESSURE_ERROR	(BIT(5) | BIT(4))
+#define DP_INTR_SST_BS_LATE	BIT(8)
+
 
 #define DP_MAX_TIME_SLOTS	64
 
@@ -43,6 +62,11 @@ enum dp_stream_id {
 struct dp_catalog_vsc_sdp_colorimetry {
 	struct dp_sdp_header header;
 	u8 data[32];
+};
+
+struct dp_misr40_data {
+	u32 ctrl_misr[8];
+	u32 phy_misr[8];
 };
 
 struct dp_catalog_aux {
@@ -65,7 +89,9 @@ struct dp_catalog_aux {
 
 struct dp_catalog_ctrl {
 	u32 isr;
+	u32 isr3;
 	u32 isr5;
+	u32 isr6;
 
 	void (*state_ctrl)(struct dp_catalog_ctrl *ctrl, u32 state);
 	void (*config_ctrl)(struct dp_catalog_ctrl *ctrl, u8 ln_cnt);
@@ -102,6 +128,8 @@ struct dp_catalog_ctrl {
 
 	int (*late_phy_init)(struct dp_catalog_ctrl *ctrl,
 					u8 lane_cnt, bool flipped);
+	int (*setup_misr)(struct dp_catalog_ctrl *ctrl);
+	int (*read_misr)(struct dp_catalog_ctrl *ctrl, struct dp_misr40_data *data);
 };
 
 struct dp_catalog_hpd {
@@ -208,7 +236,7 @@ struct dp_catalog_panel {
 	void (*config_sdp)(struct dp_catalog_panel *panel, bool en);
 	int (*set_colorspace)(struct dp_catalog_panel *panel,
 		 bool vsc_supported);
-	void (*tpg_config)(struct dp_catalog_panel *panel, bool enable);
+	void (*tpg_config)(struct dp_catalog_panel *panel, u32  pattern);
 	void (*config_spd)(struct dp_catalog_panel *panel);
 	void (*config_misc)(struct dp_catalog_panel *panel);
 	void (*config_msa)(struct dp_catalog_panel *panel,
@@ -220,6 +248,7 @@ struct dp_catalog_panel {
 	void (*pps_flush)(struct dp_catalog_panel *panel);
 	void (*dhdr_flush)(struct dp_catalog_panel *panel);
 	bool (*dhdr_busy)(struct dp_catalog_panel *panel);
+	int (*get_src_crc)(struct dp_catalog_panel *panel, u16 *crc);
 };
 
 struct dp_catalog;

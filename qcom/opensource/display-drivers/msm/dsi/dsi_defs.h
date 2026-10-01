@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -268,30 +268,6 @@ enum dsi_dyn_clk_feature_type {
  * @DSI_CMD_SET_POST_TIMING_SWITCH:        Post timing switch
  * @DSI_CMD_SET_QSYNC_ON                   Enable qsync mode
  * @DSI_CMD_SET_QSYNC_OFF                  Disable qsync mode
- * @DSI_CMD_SET_HBM_FOD_ON:                Turning HBM_FOD on
- * @DSI_CMD_SET_HBM_ON:                    Turning HBM on
- * @DSI_CMD_SET_HBM_OFF:                   Turning HBM off
- * @DSI_CMD_SET_ACL_ON:                    Turning ACL on
- * @DSI_CMD_SET_ACL_OFF:                   Turning ACL off
- * @DSI_CMD_SET_HBM_DIM_OFF:		       Turning HBM DIM off
- * @DSI_CMD_SET_CABC_UI:                   CABC UI mode
- * @DSI_CMD_SET_CABC_MV:                   CABC MV mode
- * @DSI_CMD_SET_CABC_DIS:                  CABC DIS mode
- * @DSI_CMD_SET_DC_ON:                    DC mode on
- * @DSI_CMD_SET_DC_OFF:                   DC mode off
- * @DSI_CMD_SET_COLOR_VBT :                    COLOR VBT mode
- * @DSI_CMD_SET_COLOR_STD:                   COLOR STD mode
- * @DSI_CMD_SET_COLOR_GAME :                    COLOR GAME mode
- * @DSI_CMD_SET_COLOR_NONE:                   COLOR NONE mode
- * @DSI_CMD_SET_DFPS_CMD_48:                DFPS switch to 48
- * @DSI_CMD_SET_DFPS_CMD_60:                DFPS switch to 60
- * @DSI_CMD_SET_DFPS_CMD_90:                DFPS switch to 90
- * @DSI_CMD_SET_DFPS_CMD_120:               DFPS switch to 120
- * @DSI_CMD_SET_DFPS_CMD_144:               DFPS switch to 144
- * @DSI_CMD_SET_PANEL_CELLID:               Panel cellid
- * @DSI_CMD_SET_PANEL_PCD_ENABLE:               Panel pcd check enable
- * @DSI_CMD_SET_PANEL_PCD_DISABLE:               Panel pcd check disable
-
  * @DSI_CMD_SET_MAX
  */
 enum dsi_cmd_set_type {
@@ -320,32 +296,6 @@ enum dsi_cmd_set_type {
 	DSI_CMD_SET_POST_TIMING_SWITCH,
 	DSI_CMD_SET_QSYNC_ON,
 	DSI_CMD_SET_QSYNC_OFF,
-	DSI_CMD_SET_HBM_FOD_ON,
-	DSI_CMD_SET_HBM_ON,
-	DSI_CMD_SET_HBM_OFF,
-	DSI_CMD_SET_ACL_ON,
-	DSI_CMD_SET_ACL_OFF,
-	DSI_CMD_SET_HBM_DIM_OFF,
-	DSI_CMD_SET_CABC_UI,
-	DSI_CMD_SET_CABC_MV,
-	DSI_CMD_SET_CABC_DIS,
-	DSI_CMD_SET_DC_ON,
-	DSI_CMD_SET_DC_OFF,
-	DSI_CMD_SET_COLOR_VBT,
-	DSI_CMD_SET_COLOR_STD,
-	DSI_CMD_SET_COLOR_GAME,
-	DSI_CMD_SET_COLOR_NONE,
-	DSI_CMD_SET_DFPS_CMD_48,
-	DSI_CMD_SET_DFPS_CMD_60,
-	DSI_CMD_SET_DFPS_CMD_90,
-	DSI_CMD_SET_DFPS_CMD_120,
-	DSI_CMD_SET_DFPS_CMD_144,
-	DSI_CMD_SET_PANEL_CELLID,
-	DSI_CMD_SET_TIMING_SWITCH_BASE,
-	DSI_CMD_SET_NORMAL_BACKLIGHT,
-	DSI_CMD_SET_HBM_BACKLIGHT,
-	DSI_CMD_SET_PANEL_PCD_ENABLE,
-	DSI_CMD_SET_PANEL_PCD_DISABLE,
 	DSI_CMD_SET_MAX
 };
 
@@ -462,14 +412,14 @@ struct dsi_panel_cmd_set {
  * @mdp_transfer_time_us:   Specifies the mdp transfer time for command mode
  *                    panels in microseconds.
  * @dsi_transfer_time_us:   Specifies dsi transfer time for command mode.
- * @fsc_mode:         Panel FSC (Field sequential coloring) Mode status.
  * @dsc_enabled:      DSC compression enabled.
  * @vdc_enabled:      VDC compression enabled.
  * @dsc:              DSC compression configuration.
  * @vdc:              VDC compression configuration.
  * @pclk_scale:       pclk scale factor, target bpp to source bpp
  * @roi_caps:         Panel ROI capabilities.
- * @qsync_min_fps:        Qsync min fps rate
+ * @qsync_min_fps:    Qsync min fps rate
+ * @avr_step_fps:     AVR step fps rate
  */
 struct dsi_mode_info {
 	u32 h_active;
@@ -490,7 +440,6 @@ struct dsi_mode_info {
 	u64 min_dsi_clk_hz;
 	u32 mdp_transfer_time_us;
 	u32 dsi_transfer_time_us;
-	bool fsc_mode;
 	bool dsc_enabled;
 	bool vdc_enabled;
 	struct msm_display_dsc_info *dsc;
@@ -498,8 +447,7 @@ struct dsi_mode_info {
 	struct msm_ratio pclk_scale;
 	struct msm_roi_caps roi_caps;
 	u32 qsync_min_fps;
-	// Motorola zhanggb, add refreshrate group, IKSWT-18219
-	u32 refresh_rate_group_flag;
+	u32 avr_step_fps;
 };
 
 /**
@@ -555,6 +503,8 @@ struct dsi_split_link_config {
  *			 cmd it points to the line after TE.
  * @dma_sched_window:	 Determines the width of the window during the
  *			 DSI command will be sent by the HW.
+ * @vpadding:			 panel stacking height.
+ * @line_insertion_enable: line insertion support enable.
  */
 struct dsi_host_common_cfg {
 	enum dsi_pixel_format dst_format;
@@ -582,6 +532,8 @@ struct dsi_host_common_cfg {
 	u32 byte_intf_clk_div;
 	u32 dma_sched_line;
 	u32 dma_sched_window;
+	u32 vpadding;
+	bool line_insertion_enable;
 };
 
 /**
@@ -669,14 +621,20 @@ struct dsi_host_config {
  * @panel_prefill_lines:  Panel prefill lines for RSC
  * @mdp_transfer_time_us:   Specifies the mdp transfer time for command mode
  *                          panels in microseconds.
+ * @mdp_transfer_time_us_min:   Specifies the minimum possible mdp transfer time
+ *                              for command mode panels in microseconds.
+ * @mdp_transfer_time_us_max:   Specifies the maximum possible mdp transfer time
+ *                              for command mode panels in microseconds.
  * @dsi_transfer_time_us: Specifies the dsi transfer time for cmd panels.
  * @qsync_min_fps:        Qsync min fps value for the mode
+ * @avr_step_fps:         AVR step fps value for the mode
  * @clk_rate_hz:          DSI bit clock per lane in hz.
  * @min_dsi_clk_hz:       Min dsi clk per lane to transfer frame in vsync time.
  * @bit_clk_list:         List of dynamic bit clock rates supported.
  * @topology:             Topology selected for the panel
  * @dsc:                  DSC compression info
  * @vdc:                  VDC compression info
+ * @wd_jitter:            WD Jitter config.
  * @dsc_enabled:          DSC compression enabled
  * @vdc_enabled:          VDC compression enabled
  * @pclk_scale:           pclk scale factor, target bpp to source bpp
@@ -695,22 +653,25 @@ struct dsi_display_mode_priv_info {
 	u32 panel_jitter_denom;
 	u32 panel_prefill_lines;
 	u32 mdp_transfer_time_us;
+	u32 mdp_transfer_time_us_min;
+	u32 mdp_transfer_time_us_max;
 	u32 dsi_transfer_time_us;
 	u32 qsync_min_fps;
+	u32 avr_step_fps;
 	u64 clk_rate_hz;
 	u64 min_dsi_clk_hz;
 	struct msm_dyn_clk_list bit_clk_list;
-	u32 phy_drive_strength;
 
 	struct msm_display_topology topology;
 	struct msm_display_dsc_info dsc;
 	struct msm_display_vdc_info vdc;
+	struct msm_display_wd_jitter_config wd_jitter;
 	bool dsc_enabled;
 	bool vdc_enabled;
 	struct msm_ratio pclk_scale;
 	struct msm_roi_caps roi_caps;
 	bool widebus_support;
-	u64 allowed_mode_switch;
+	u32 allowed_mode_switch;
 	bool disable_rsc_solver;
 };
 

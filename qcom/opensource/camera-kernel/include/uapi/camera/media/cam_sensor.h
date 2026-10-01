@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __UAPI_CAM_SENSOR_H__
@@ -64,15 +64,6 @@ enum cam_ois_packet_opcodes {
 	CAM_OIS_PACKET_OPCODE_INIT,
 	CAM_OIS_PACKET_OPCODE_OIS_CONTROL,
 	CAM_OIS_PACKET_OPCODE_READ,
-#ifdef CONFIG_MOT_OIS_EARLY_UPGRADE_FW
-	CAM_OIS_PACKET_OPCODE_OIS_FW_UPGRADE,
-#endif
-#ifdef CONFIG_MOT_OIS_AF_DRIFT
-	CAM_OIS_PACKET_OPCODE_AF_DRIFT,
-#endif
-#ifdef CONFIG_MOT_OIS_AFTER_SALES_SERVICE
-	CAM_OIS_PACKET_OPCODE_OIS_GYRO_OFFSET,
-#endif
 	CAM_OIS_PACKET_OPCODE_WRITE_TIME
 };
 
@@ -330,17 +321,7 @@ struct cam_cmd_ois_info {
 	__u8                  i2c_freq_mode;
 	__u8                  cmd_type;
 	__u8                  ois_fw_flag;
-#ifdef CONFIG_MOT_OIS_EARLY_UPGRADE_FW
-	__u8                  ois_early_fw_flag;
-#endif
 	__u8                  is_ois_calib;
-	__u8                  ois_preprog_flag;
-	__u8                  ois_precoeff_flag;
-	__u8                  ois_postcalib_flag;
-	__u8                  ois_fw_txn_data_sz;
-	__u8                  ois_fw_inc_addr;
-	__u8                  ois_fw_addr_type;
-	__u8                  ois_fw_data_type;
 	char                  ois_name[MAX_OIS_NAME_SIZE];
 	struct cam_ois_opcode opcode;
 } __attribute__((packed));
@@ -401,24 +382,6 @@ struct cam_cmd_probe_v2 {
 	__u32    logical_camera_id;
 	char     sensor_name[CAM_SENSOR_NAME_MAX_SIZE];
 	__u32    reserved[4];
-#ifdef CONFIG_CCI_ADDR_SWITCH
-	/* add i2c addr switch support*/
-	__u8     i2c_addr_switch;
-	__u32    second_i2c_address;
-	__u8     i2c_switch_reg_addr_Type;
-	__u8     i2c_switch_reg_data_Type;
-	__u32    i2c_switch_reg_addr;
-	__u32    i2c_switch_reg_data;
-	__u32    i2c_switch_reg_delayMs;
-#endif
-#ifdef CONFIG_MOT_PROBE_SUB_DEVICE
-	__u8     probe_sub_device;
-	__u32    sub_device_addr;
-	__u8     sub_device_data_type;
-	__u8     sub_device_addr_type;
-	__u32    sub_device_id_addr;
-	__u32    expected_sub_device_id;
-#endif
 } __attribute__((packed));
 
 /**
@@ -450,7 +413,10 @@ struct cam_cmd_power {
 	__u8                        reserved;
 	__u8                        cmd_type;
 	__u16                       more_reserved;
-	struct cam_power_settings   power_settings[1];
+	union {
+		struct cam_power_settings   power_settings[1];
+		__DECLARE_FLEX_ARRAY(struct cam_power_settings, power_settings_flex);
+	};
 } __attribute__((packed));
 
 /**
@@ -490,7 +456,10 @@ struct i2c_random_wr_payload {
  */
 struct cam_cmd_i2c_random_wr {
 	struct i2c_rdwr_header       header;
-	struct i2c_random_wr_payload random_wr_payload[1];
+	union {
+		struct i2c_random_wr_payload random_wr_payload[1];
+		__DECLARE_FLEX_ARRAY(struct i2c_random_wr_payload, random_wr_payload_flex);
+	};
 } __attribute__((packed));
 
 /**
@@ -512,7 +481,10 @@ struct cam_cmd_read {
 struct cam_cmd_i2c_continuous_wr {
 	struct i2c_rdwr_header header;
 	__u32                  reg_addr;
-	struct cam_cmd_read    data_read[1];
+	union {
+		struct cam_cmd_read    data_read[1];
+		__DECLARE_FLEX_ARRAY(struct cam_cmd_read, data_read_flex);
+	};
 } __attribute__((packed));
 
 /**
@@ -522,7 +494,10 @@ struct cam_cmd_i2c_continuous_wr {
  */
 struct cam_cmd_i2c_random_rd {
 	struct i2c_rdwr_header header;
-	struct cam_cmd_read    data_read[1];
+	union {
+		struct cam_cmd_read    data_read[1];
+		__DECLARE_FLEX_ARRAY(struct cam_cmd_read, data_read_flex);
+	};
 } __attribute__((packed));
 
 /**

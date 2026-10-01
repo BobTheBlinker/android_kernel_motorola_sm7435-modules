@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
+#define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 #include <linux/iopoll.h>
 
 #include "sde_hw_mdss.h"
@@ -41,6 +42,9 @@
 #define MERGE_3D_MODE 0x004
 #define MERGE_3D_MUX  0x000
 
+#define PPB_FIFO_SIZE_CFG               0x01C
+#define PPB_FIFO_SIZE_MASK              0x0FFF
+
 static struct sde_merge_3d_cfg *_merge_3d_offset(enum sde_merge_3d idx,
 		struct sde_mdss_cfg *m,
 		void __iomem *addr,
@@ -53,7 +57,7 @@ static struct sde_merge_3d_cfg *_merge_3d_offset(enum sde_merge_3d idx,
 			b->base_off = addr;
 			b->blk_off = m->merge_3d[i].base;
 			b->length = m->merge_3d[i].len;
-			b->hwversion = m->hwversion;
+			b->hw_rev = m->hw_rev;
 			b->log_mask = SDE_DBG_MASK_PINGPONG;
 			return &m->merge_3d[i];
 		}
@@ -147,7 +151,7 @@ static struct sde_pingpong_cfg *_pingpong_offset(enum sde_pingpong pp,
 			b->base_off = addr;
 			b->blk_off = m->pingpong[i].base;
 			b->length = m->pingpong[i].len;
-			b->hwversion = m->hwversion;
+			b->hw_rev = m->hw_rev;
 			b->log_mask = SDE_DBG_MASK_PINGPONG;
 			return &m->pingpong[i];
 		}
@@ -246,16 +250,13 @@ static int sde_hw_pp_poll_timeout_wr_ptr(struct sde_hw_pingpong *pp,
 {
 	struct sde_hw_blk_reg_map *c;
 	u32 val;
-	int rc;
 
 	if (!pp)
 		return -EINVAL;
 
 	c = &pp->hw;
-	rc = readl_poll_timeout(c->base_off + c->blk_off + PP_LINE_COUNT,
-			val, (val & 0xffff) >= 1, 10, timeout_us);
-
-	return rc;
+	return read_poll_timeout(sde_reg_read, val, (val & 0xffff) >= 1,
+					10, false, timeout_us, c, PP_LINE_COUNT);
 }
 
 static void sde_hw_pp_dsc_enable(struct sde_hw_pingpong *pp)
@@ -441,6 +442,22 @@ line_count_exit:
 	return line;
 }
 
+static void sde_hw_pp_set_ppb_fifo_size(struct sde_hw_pingpong *pp, u32 pixels)
+{
+	struct sde_hw_blk_reg_map *c;
+	u32 val;
+
+	if (!pp)
+		return;
+
+	c = &pp->hw;
+
+	/* covert to fifo units, 4 pixels can be stored per fifo */
+	val = (pixels / MDP_PPB_FIFO_ENTRY_SIZE) & 0x0FFF;
+
+	SDE_REG_WRITE(c, PPB_FIFO_SIZE_CFG, val);
+}
+
 static void sde_hw_pp_setup_3d_merge_mode(struct sde_hw_pingpong *pp,
 					enum sde_3d_blend_mode cfg)
 {
@@ -475,7 +492,11 @@ static void _setup_pingpong_ops(struct sde_hw_pingpong_ops *ops,
 		ops->get_autorefresh = sde_hw_pp_get_autorefresh_config;
 		ops->poll_timeout_wr_ptr = sde_hw_pp_poll_timeout_wr_ptr;
 		ops->get_line_count = sde_hw_pp_get_line_count;
+	} else if (hw_cap->features & BIT(SDE_PINGPONG_SET_SIZE)) {
+		/* PPB_FIFO_CFG offset conflicts with legacy PP Tear registers */
+		ops->set_ppb_fifo_size = sde_hw_pp_set_ppb_fifo_size;
 	}
+
 	if (hw_cap->features & BIT(SDE_PINGPONG_DSC)) {
 		ops->setup_dsc = sde_hw_pp_setup_dsc;
 		ops->enable_dsc = sde_hw_pp_dsc_enable;
@@ -498,18 +519,12 @@ static void _setup_pingpong_ops(struct sde_hw_pingpong_ops *ops,
 	}
 };
 
-static struct sde_hw_blk_ops sde_hw_ops = {
-	.start = NULL,
-	.stop = NULL,
-};
-
-struct sde_hw_pingpong *sde_hw_pingpong_init(enum sde_pingpong idx,
+struct sde_hw_blk_reg_map *sde_hw_pingpong_init(enum sde_pingpong idx,
 		void __iomem *addr,
 		struct sde_mdss_cfg *m)
 {
 	struct sde_hw_pingpong *c;
 	struct sde_pingpong_cfg *cfg;
-	int rc;
 
 	c = kzalloc(sizeof(*c), GFP_KERNEL);
 	if (!c)
@@ -534,12 +549,6 @@ struct sde_hw_pingpong *sde_hw_pingpong_init(enum sde_pingpong idx,
 
 	_setup_pingpong_ops(&c->ops, c->caps);
 
-	rc = sde_hw_blk_init(&c->base, SDE_HW_BLK_PINGPONG, idx, &sde_hw_ops);
-	if (rc) {
-		SDE_ERROR("failed to init hw blk %d\n", rc);
-		goto blk_init_error;
-	}
-
 	sde_dbg_reg_register_dump_range(SDE_DBG_NAME, cfg->name, c->hw.blk_off,
 			c->hw.blk_off + c->hw.length, c->hw.xin_id);
 
@@ -552,18 +561,15 @@ struct sde_hw_pingpong *sde_hw_pingpong_init(enum sde_pingpong idx,
 			c->hw.xin_id);
 	}
 
-	return c;
-
-blk_init_error:
-	kfree(c);
-
-	return ERR_PTR(rc);
+	return &c->hw;
 }
 
-void sde_hw_pingpong_destroy(struct sde_hw_pingpong *pp)
+void sde_hw_pingpong_destroy(struct sde_hw_blk_reg_map *hw)
 {
-	if (pp) {
-		sde_hw_blk_destroy(&pp->base);
+	struct sde_hw_pingpong *pp;
+
+	if (hw) {
+		pp = to_sde_hw_pingpong(hw);
 		kfree(pp->merge_3d);
 		kfree(pp);
 	}

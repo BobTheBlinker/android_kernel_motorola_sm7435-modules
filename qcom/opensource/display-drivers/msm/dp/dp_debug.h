@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _DP_DEBUG_H_
@@ -69,8 +69,16 @@
 		pr_warn("[drm:%s][msm-dp-warn][%-4d]"fmt, __func__,  \
 				current->pid, ##__VA_ARGS__)
 
+#define DP_WARN_RATELIMITED_V(fmt, ...)                                    \
+		pr_warn_ratelimited("[drm:%s][msm-dp-warn][%-4d]"fmt, __func__,  \
+				current->pid, ##__VA_ARGS__)
+
 #define DP_ERR_V(fmt, ...)                                    \
 		pr_err("[drm:%s][msm-dp-err][%-4d]"fmt, __func__,   \
+				current->pid, ##__VA_ARGS__)
+
+#define DP_ERR_RATELIMITED_V(fmt, ...)                                    \
+		pr_err_ratelimited("[drm:%s][msm-dp-err][%-4d]"fmt, __func__, \
 				current->pid, ##__VA_ARGS__)
 
 #define DEFAULT_DISCONNECT_DELAY_MS 0
@@ -84,7 +92,7 @@
  * @psm_enabled: specifies whether psm enabled
  * @hdcp_disabled: specifies if hdcp is disabled
  * @hdcp_wait_sink_sync: used to wait for sink synchronization before HDCP auth
- * @tpg_state: specifies whether tpg feature is enabled
+ * @tpg_pattern: selects tpg pattern on the controller
  * @max_pclk_khz: max pclk supported
  * @force_encryption: enable/disable forced encryption for HDCP 2.2
  * @skip_uevent: skip hotplug uevent to the user space
@@ -102,7 +110,7 @@ struct dp_debug {
 	bool psm_enabled;
 	bool hdcp_disabled;
 	bool hdcp_wait_sink_sync;
-	bool tpg_state;
+	u32 tpg_pattern;
 	u32 max_pclk_khz;
 	bool force_encryption;
 	bool skip_uevent;

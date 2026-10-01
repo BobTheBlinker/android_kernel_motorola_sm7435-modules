@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021 The Linux Foundation. All rights reserved.
  */
 
+#define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 #include <linux/kthread.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
@@ -247,7 +248,7 @@ static void _dce_dsc_pipe_cfg(struct sde_hw_dsc *hw_dsc,
 	if (mode_3d && disable_merge_3d && hw_pp->ops.reset_3d_mode) {
 		SDE_DEBUG("disabling 3d mux \n");
 		hw_pp->ops.reset_3d_mode(hw_pp);
-	} else if (mode_3d && !disable_merge_3d && hw_pp->ops.setup_3d_mode) {
+	} else if (mode_3d && disable_merge_3d && hw_pp->ops.setup_3d_mode) {
 		SDE_DEBUG("enabling 3d mux \n");
 		hw_pp->ops.setup_3d_mode(hw_pp, mode_3d);
 	}
@@ -318,7 +319,7 @@ static int _dce_dsc_setup_single(struct sde_encoder_virt *sde_enc,
 		struct msm_display_dsc_info *dsc,
 		unsigned long affected_displays, int index,
 		const struct sde_rect *roi, int dsc_common_mode,
-		bool merge_3d, bool disable_merge_3d, enum sde_3d_blend_mode mode_3d,
+		bool merge_3d, bool disable_merge_3d, bool mode_3d,
 		bool dsc_4hsmerge, bool half_panel_partial_update,
 		int ich_res)
 {
@@ -336,7 +337,7 @@ static int _dce_dsc_setup_single(struct sde_encoder_virt *sde_enc,
 	 * bound to the pp which is driving the update, else in
 	 * 3d_merge dsc should be bound to left side of the pipe
 	 */
-	if (half_panel_partial_update)
+	if (merge_3d || half_panel_partial_update)
 		hw_pp = (active) ? sde_enc->hw_pp[0] : sde_enc->hw_pp[1];
 	else
 		hw_pp = sde_enc->hw_pp[index];
@@ -417,6 +418,7 @@ static int _dce_dsc_setup_helper(struct sde_encoder_virt *sde_enc,
 	int dsc_pic_width;
 	int dsc_common_mode = 0;
 	int i, rc = 0;
+	bool widebus_en;
 
 	sde_kms = sde_encoder_get_kms(&sde_enc->base);
 
@@ -439,7 +441,7 @@ static int _dce_dsc_setup_helper(struct sde_encoder_virt *sde_enc,
 			!(enc_master->hw_intf->cfg.split_link_en)) ?
 			true : false;
 	disable_merge_3d = (merge_3d && dsc->half_panel_pu) ?
-			true : false;
+			false : true;
 	dsc_4hsmerge = (dsc_merge && num_dsc == 4 && num_intf == 1) ?
 			true : false;
 
@@ -485,7 +487,9 @@ static int _dce_dsc_setup_helper(struct sde_encoder_virt *sde_enc,
 	else if ((dsc_common_mode & DSC_MODE_MULTIPLEX) || (dsc->half_panel_pu))
 		dsc->num_active_ss_per_enc = dsc->config.slice_count >> 1;
 
-	sde_dsc_populate_dsc_private_params(dsc, intf_ip_w);
+	widebus_en = sde_encoder_is_widebus_enabled(enc_master->parent);
+
+	sde_dsc_populate_dsc_private_params(dsc, intf_ip_w, widebus_en);
 
 	_dce_dsc_initial_line_calc(dsc, enc_ip_w, dsc_common_mode);
 
@@ -930,6 +934,26 @@ void sde_encoder_dce_set_bpp(struct msm_mode_info mode_info,
 
 	SDE_DEBUG("sde_crtc src_bpp = %d, target_bpp = %d\n",
 			sde_crtc->src_bpp, sde_crtc->target_bpp);
+}
+
+bool sde_encoder_has_dsc_hw_rev_2(struct sde_encoder_virt *sde_enc)
+{
+	enum msm_display_compression_type comp_type;
+	int i;
+
+	if (!sde_enc)
+		return false;
+
+	comp_type = sde_enc->mode_info.comp_info.comp_type;
+
+	if (comp_type != MSM_DISPLAY_COMPRESSION_DSC)
+		return false;
+
+	for (i = 0; i < MAX_CHANNELS_PER_ENC; i++)
+		if (sde_enc->hw_dsc[i])
+			return test_bit(SDE_DSC_HW_REV_1_2, &sde_enc->hw_dsc[i]->caps->features);
+
+	return false;
 }
 
 void sde_encoder_dce_disable(struct sde_encoder_virt *sde_enc)

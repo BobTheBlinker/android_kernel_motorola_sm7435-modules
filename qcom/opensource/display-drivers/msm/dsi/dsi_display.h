@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -12,6 +12,7 @@
 #include <linux/debugfs.h>
 #include <linux/of_device.h>
 #include <linux/firmware.h>
+#include <linux/ktime.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_bridge.h>
 
@@ -20,21 +21,17 @@
 #include "dsi_ctrl.h"
 #include "dsi_phy.h"
 #include "dsi_panel.h"
-#include "sde_connector.h"
-#include "sde_motUtil.h"
 
 #define MAX_DSI_CTRLS_PER_DISPLAY             2
 #define DSI_CLIENT_NAME_SIZE		20
 #define MAX_CMDLINE_PARAM_LEN	 512
 #define MAX_CMD_PAYLOAD_SIZE	256
-#define PCD_CHECK_READ_CMD_LEN       256
 
 #define DSI_MODE_MATCH_ACTIVE_TIMINGS (1 << 0)
 #define DSI_MODE_MATCH_PORCH_TIMINGS (1 << 1)
 #define DSI_MODE_MATCH_FULL_TIMINGS (DSI_MODE_MATCH_ACTIVE_TIMINGS | DSI_MODE_MATCH_PORCH_TIMINGS)
 #define DSI_MODE_MATCH_DSC_CONFIG (1 << 2)
 
-#define MAX_PANEL_CELLID      50
 /*
  * DSI Validate Mode modifiers
  * @DSI_VALIDATE_FLAG_ALLOW_ADJUST:	Allow mode validation to also do fixup
@@ -145,12 +142,9 @@ struct dsi_display_ext_bridge {
  * @ext_conn:         Pointer to external connector attached to DSI connector
  * @name:             Name of the display.
  * @display_type:     Display type as defined in device tree.
- * @display_idx:      Display index (0-primary, 1-secondary)
  * @list:             List pointer.
  * @is_active:        Is display active.
  * @is_cont_splash_enabled:  Is continuous splash enabled
- * @is_hibernate_splash_enabled: Is hibernation splash enabled.
- * @is_hibernate_exit: Is hibernate exit.
  * @sw_te_using_wd:   Is software te enabled
  * @display_lock:     Mutex for dsi_display interface.
  * @disp_te_gpio:     GPIO for panel TE interrupt.
@@ -213,11 +207,8 @@ struct dsi_display {
 
 	const char *name;
 	const char *display_type;
-	int display_idx;
 	struct list_head list;
 	bool is_cont_splash_enabled;
-	bool is_hibernate_splash_enabled;
-	bool is_hibernate_exit;
 	bool sw_te_using_wd;
 	struct mutex display_lock;
 	int disp_te_gpio;
@@ -279,7 +270,6 @@ struct dsi_display {
 	bool misr_enable;
 	u32 misr_frame_count;
 	u32 esd_trigger;
-	bool disp_esd_chk_underway;
 	/* multiple dsi error handlers */
 	struct workqueue_struct *err_workq;
 	struct work_struct fifo_underflow_work;
@@ -311,15 +301,11 @@ struct dsi_display {
 	struct dsi_panel_cmd_set cmd_set;
 
 	bool enabled;
-	bool sysfs_add_done;
-	u8 cellid[MAX_PANEL_CELLID];
-	bool read_cellid;
 };
 
 int dsi_display_dev_probe(struct platform_device *pdev);
 int dsi_display_dev_remove(struct platform_device *pdev);
-void dsi_display_dev_shutdown(struct platform_device *pdev);
-void dsi_display_pcd_check(struct drm_connector *connector,struct dsi_display *display);
+
 /**
  * dsi_display_get_num_of_displays() - returns number of display devices
  *				       supported.
@@ -434,15 +420,6 @@ void dsi_display_put_mode(struct dsi_display *display,
  * Return: error code.
  */
 int dsi_display_get_default_lms(void *dsi_display, u32 *num_lm);
-
-/**
- * dsi_display_get_avr_step_req_fps() - get avr step rate for given fps
- * @display:            Handle to display.
- * @mode_fps:           Fps value of current mode
- *
- * Return: AVR step rate or -ve error code.
- */
-int dsi_display_get_avr_step_req_fps(void *dsi_display, u32 mode_fps);
 
 /*
  * dsi_conn_get_lm_from_mode() - retrieves LM count from dsi mode priv info
@@ -612,8 +589,6 @@ int dsi_post_clkoff_cb(void *priv, enum dsi_clk_type clk_type,
 		enum dsi_lclk_type l_type,
 		enum dsi_clk_state curr_state);
 
-int dsi_display_set_param(void *display, struct msm_param_info *param_info);
-
 /**
  * dsi_post_clkon_cb() - Callback after clock is turned on
  * @priv: private data pointer.
@@ -651,7 +626,10 @@ int dsi_pre_clkon_cb(void *priv, enum dsi_clk_type clk_type,
  */
 int dsi_display_unprepare(struct dsi_display *display);
 
-int dsi_display_set_tpg_state(struct dsi_display *display, bool enable);
+int dsi_display_set_tpg_state(struct dsi_display *display, bool enable,
+		enum dsi_test_pattern type,
+		u32 init_val,
+		enum dsi_ctrl_tpg_pattern pattern);
 
 int dsi_display_clock_gate(struct dsi_display *display, bool enable);
 int dsi_dispaly_static_frame(struct dsi_display *display, bool enable);
@@ -724,32 +702,10 @@ int dsi_display_cmd_transfer(struct drm_connector *connector,
  * @cmd_buf_len:        Command buffer length in bytes
  * @recv_buf:           Receive buffer
  * @recv_buf_len:       Receive buffer length in bytes
+ * @ts:                 Command time stamp in nano-seconds.
  */
 int dsi_display_cmd_receive(void *display, const char *cmd_buf,
-			    u32 cmd_buf_len, u8 *recv_buf, u32 recv_buf_len);
-/**
- * dsi_display_motUtil_transfer() - Convert motUtil data and transfer command
- *						to the panel
- * @display:            Handle to display.
- * @cmd_buf:            Command buffer
- * @cmd_buf_len:        Command buffer length in bytes
- * @motUtil_data:	motUtil data information
- */
-int dsi_display_motUtil_transfer(void *display, const char *cmd_buf,
-		u32 cmd_buf_len, struct motUtil *motUtil_data);
-
-/**
- * dsi_display_trigger_panel_dead_event() - Trigger ESD recovery
- *
- * @display:            Handle to display.
- */
-int dsi_display_trigger_panel_dead_event(struct dsi_display *display);
-/**
- * dsi_display_force_esd_disable() - check if ESD UTAG is forced to disable ESD
- * @display:            Handle to display.
- */
-bool dsi_display_force_esd_disable(void *display);
-
+			    u32 cmd_buf_len, u8 *recv_buf, u32 recv_buf_len, ktime_t *ts);
 
 /**
  * dsi_display_soft_reset() - perform a soft reset on DSI controller
@@ -813,20 +769,6 @@ enum dsi_pixel_format dsi_display_get_dst_format(
 		struct drm_connector *connector,
 		void *display);
 
-/*
- * dsi_display_cmd_mipi_transfer() - Sending the MIPI DSI command
- * @display:         Handle to display
- * @msg:             MIPI DSI command information
- * @flags:           Modifier flags
- * Return: if this is a MIPI DSI read then it will return number read byte
- *                                in success case. Otherwise will be "<=0"
- *         if this is a MIPI DSI write then it will return "0" for success
- *
- */
-int dsi_display_cmd_mipi_transfer(struct dsi_display *display,
-		struct mipi_dsi_msg *msg,
-		u32 flags);
-
 /**
  * dsi_display_cont_splash_config() - initialize splash resources
  * @display:         Handle to display
@@ -886,6 +828,23 @@ int dsi_display_restore_bit_clk(struct dsi_display *display, struct dsi_display_
 bool dsi_display_mode_match(const struct dsi_display_mode *mode1,
 		struct dsi_display_mode *mode2, unsigned int match_flags);
 
-void dsi_display_set_cmd_tx_ctrl_flags(struct dsi_display *display,
-		struct dsi_cmd_desc *cmd);
+/**
+ * dsi_display_update_transfer_time() - update DSI transfer time and clocks
+ * @display:     handle to display
+ * @transfer_time: transfer time value to be updated
+ *
+ * Return: error code
+ */
+int dsi_display_update_transfer_time(void *display, u32 transfer_time);
+
+/**
+ * dsi_display_get_panel_scan_line() - get panel scan line
+ * @display:     handle to display
+ * @scan_line:   scan line buffer value
+ * @scan_line_ts:   scan line time stamp value in nano-seconds
+ *
+ * Return: error code
+ */
+int dsi_display_get_panel_scan_line(void *display, u16 *scan_line, ktime_t *scan_line_ts);
+
 #endif /* _DSI_DISPLAY_H_ */

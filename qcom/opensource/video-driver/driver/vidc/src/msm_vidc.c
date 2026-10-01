@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include <linux/types.h>
@@ -113,16 +113,16 @@ int msm_vidc_querycap(void *instance, struct v4l2_capability *cap)
 		return -EINVAL;
 	}
 
-	strlcpy(cap->driver, MSM_VIDC_DRV_NAME, sizeof(cap->driver));
-	strlcpy(cap->bus_info, MSM_VIDC_BUS_NAME, sizeof(cap->bus_info));
+	strscpy(cap->driver, MSM_VIDC_DRV_NAME, sizeof(cap->driver));
+	strscpy(cap->bus_info, MSM_VIDC_BUS_NAME, sizeof(cap->bus_info));
 	cap->version = MSM_VIDC_VERSION;
 
 	memset(cap->reserved, 0, sizeof(cap->reserved));
 
 	if (inst->domain == MSM_VIDC_DECODER)
-		strlcpy(cap->card, "msm_vidc_decoder", sizeof(cap->card));
+		strscpy(cap->card, "msm_vidc_decoder", sizeof(cap->card));
 	else if (inst->domain == MSM_VIDC_ENCODER)
-		strlcpy(cap->card, "msm_vidc_encoder", sizeof(cap->card));
+		strscpy(cap->card, "msm_vidc_encoder", sizeof(cap->card));
 	else
 		return -EINVAL;
 
@@ -209,7 +209,7 @@ int msm_vidc_query_menu(void *instance, struct v4l2_querymenu *qmenu)
 		rc = -EINVAL;
 
 	i_vpr_h(inst,
-		"%s: ctrl: %s: min %lld, max %lld, menu_skip_mask %#x, qmenu: id %u, index %d, %s\n",
+		"%s: ctrl: %s: min %lld, max %lld, menu_skip_mask %lld, qmenu: id %u, index %d, %s\n",
 		__func__, ctrl->name, ctrl->minimum, ctrl->maximum,
 		ctrl->menu_skip_mask, qmenu->id, qmenu->index,
 		rc ? "not supported" : "supported");

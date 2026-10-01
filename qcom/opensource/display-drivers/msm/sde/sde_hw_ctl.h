@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -10,7 +11,7 @@
 #include "sde_hw_util.h"
 #include "sde_hw_catalog.h"
 #include "sde_hw_sspp.h"
-#include "sde_hw_blk.h"
+#include "sde_fence.h"
 
 #define INVALID_CTL_STATUS 0xfffff88e
 #define CTL_MAX_DSPP_COUNT (DSPP_MAX - DSPP_0)
@@ -110,6 +111,8 @@ struct sde_hw_intf_cfg {
  * @dsc:                      Id of active dsc blocks
  * @vdc_count:                No. of active vdc blocks
  * @vdc:                      Id of active vdc blocks
+ * @dnsc_blur_count:          No. of active downscale blur blocks
+ * @dnsc_blur:                Id of active downscale blur blocks
  */
 struct sde_hw_intf_cfg_v1 {
 	uint32_t intf_count;
@@ -134,6 +137,9 @@ struct sde_hw_intf_cfg_v1 {
 
 	uint32_t vdc_count;
 	enum sde_vdc vdc[MAX_VDC_PER_CTL_V1];
+
+	uint32_t dnsc_blur_count;
+	enum sde_dnsc_blur dnsc_blur[MAX_VDC_PER_CTL_V1];
 };
 
 /**
@@ -165,6 +171,87 @@ struct sde_ctl_flush_cfg {
  * Assumption is these functions will be called after clocks are enabled
  */
 struct sde_hw_ctl_ops {
+	/**
+	 * hw fence control
+	 * @ctx         : ctl path ctx pointer
+	 */
+	void (*hw_fence_ctrl)(struct sde_hw_ctl *ctx, bool sw_set, bool sw_clear, u32 mode);
+
+	/**
+	 * override to trigger the signal for the output hw-fence
+	 * @ctx         : ctl path ctx pointer
+	 */
+	void (*trigger_output_fence_override)(struct sde_hw_ctl *ctx);
+
+	/**
+	 * trigger hw fence fence-ready sw override
+	 * @ctx         : ctl path ctx pointer
+	 */
+	void (*hw_fence_trigger_sw_override)(struct sde_hw_ctl *ctx);
+
+	/**
+	 * enable or clear hw fence output fence timestamps
+	 * @ctx         : ctl path ctx pointer
+	 * @enable      : indicates if timestamps should be enabled
+	 * @clear       : indicates if timestamps should be cleared
+	 */
+	void (*hw_fence_output_timestamp_ctrl)(struct sde_hw_ctl *ctx, bool enable, bool clear);
+
+	/**
+	 * get hw fence output fence timestamps and clear them
+	 * @ctx              : ctl path ctx pointer
+	 * @val_start        : pointer to start timestamp value
+	 * @val_end          : pointer to end timestamp value
+	 * @Return: error code
+	 */
+	int (*hw_fence_output_status)(struct sde_hw_ctl *ctx, u64 *val_start, u64 *val_end);
+
+	/**
+	 * configure output hw fence trigger
+	 * @ctx         : ctl path ctx pointer
+	 * @trigger_sel : select upon which event the output trigger will happen
+	 */
+	void (*hw_fence_trigger_output_fence)(struct sde_hw_ctl *ctx, u32 trigger_sel);
+
+	/**
+	 * get hw fence status
+	 * @ctx         : ctl path ctx pointer
+	 * @Return: fence status
+	 */
+	int (*get_hw_fence_status)(struct sde_hw_ctl *ctx);
+
+	/**
+	 * update output hw fence ipcc client_id and signal_id
+	 * @ctx       : ctl path ctx pointer
+	 * @client_id : value to write to update the client_id
+	 * @signal_id : value to write to update the signal_id
+	 */
+	void (*hw_fence_update_output_fence)(struct sde_hw_ctl *ctx, u32 client_id, u32 signal_id);
+
+	/**
+	 * update address, data size, and mask values for output fence direct writes
+	 * @ctx    : ctl path ctx pointer
+	 * @addr   : address value to write
+	 * @size   : size value to write
+	 * @mask   : mask value to write
+	 */
+	void (*hw_fence_output_fence_dir_write_init)(struct sde_hw_ctl *ctx, u32 *addr, u32 size,
+		u32 mask);
+	/**
+	 * update data value for output_fence direct writes
+	 * @ctx     : ctl path ctx pointer
+	 * @data    : data value to write
+	 */
+	void (*hw_fence_output_fence_dir_write_data)(struct sde_hw_ctl *ctx, u32 data);
+
+	/**
+	 * update input hw fence ipcc client_id and signal_id
+	 * @ctx       : ctl path ctx pointer
+	 * @client_id : value to write to update the client_id
+	 * @signal_id : value to write to update the signal_id
+	 */
+	void (*hw_fence_update_input_fence)(struct sde_hw_ctl *ctx, u32 client_id, u32 signal_id);
+
 	/**
 	 * kickoff hw operation for Sw controlled interfaces
 	 * DSI cmd mode and WB interface are SW controlled
@@ -381,6 +468,14 @@ struct sde_hw_ctl_ops {
 			enum ctl_hw_flush_type type, u32 blk_idx, bool enable);
 
 	/**
+	 * update_dnsc_blur_bitmask: updates dnsc_blur flush mask
+	 * @type              : blk type to flush
+	 * @blk_idx           : blk idx
+	 * @enable            : true to enable, 0 to disable
+	 */
+	void (*update_dnsc_blur_bitmask)(struct sde_hw_ctl *ctx, u32 blk_idx, bool enable);
+
+	/**
 	 * get interfaces for the active CTL .
 	 * @ctx		: ctl path ctx pointer
 	 * @return	: bit mask with the active interfaces for the CTL
@@ -478,7 +573,6 @@ struct sde_hw_ctl_ops {
  * @ops: operation list
  */
 struct sde_hw_ctl {
-	struct sde_hw_blk base;
 	struct sde_hw_blk_reg_map hw;
 
 	/* ctl path */
@@ -488,18 +582,21 @@ struct sde_hw_ctl {
 	const struct sde_lm_cfg *mixer_hw_caps;
 	struct sde_ctl_flush_cfg flush;
 
+	/* hw fence */
+	struct sde_hw_fence_data hwfence_data;
+
 	/* ops */
 	struct sde_hw_ctl_ops ops;
 };
 
 /**
- * sde_hw_ctl - convert base object sde_hw_base to container
- * @hw: Pointer to base hardware block
+ * to_sde_hw_ctl - convert base hw object to sde_hw_ctl container
+ * @hw: Pointer to hardware block register map object
  * return: Pointer to hardware block container
  */
-static inline struct sde_hw_ctl *to_sde_hw_ctl(struct sde_hw_blk *hw)
+static inline struct sde_hw_ctl *to_sde_hw_ctl(struct sde_hw_blk_reg_map *hw)
 {
-	return container_of(hw, struct sde_hw_ctl, base);
+	return container_of(hw, struct sde_hw_ctl, hw);
 }
 
 /**
@@ -509,14 +606,14 @@ static inline struct sde_hw_ctl *to_sde_hw_ctl(struct sde_hw_blk *hw)
  * @addr: mapped register io address of MDP
  * @m :   pointer to mdss catalog data
  */
-struct sde_hw_ctl *sde_hw_ctl_init(enum sde_ctl idx,
+struct sde_hw_blk_reg_map *sde_hw_ctl_init(enum sde_ctl idx,
 		void __iomem *addr,
 		struct sde_mdss_cfg *m);
 
 /**
  * sde_hw_ctl_destroy(): Destroys ctl driver context
- * should be called to free the context
+ * @hw: Pointer to hardware block register map object
  */
-void sde_hw_ctl_destroy(struct sde_hw_ctl *ctx);
+void sde_hw_ctl_destroy(struct sde_hw_blk_reg_map *hw);
 
 #endif /*_SDE_HW_CTL_H */

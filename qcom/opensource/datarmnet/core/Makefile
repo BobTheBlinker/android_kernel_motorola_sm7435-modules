@@ -29,7 +29,7 @@ rmnet_core-y += 	rmnet_config.o \
 			rmnet_qmap.o \
 			rmnet_ll_qmap.o
 
-ifneq (, $(filter y, $(CONFIG_ARCH_LAHAINA) $(CONFIG_ARCH_WAIPIO)))
+ifneq (, $(filter y, $(CONFIG_ARCH_PINEAPPLE)))
 rmnet_ctl-y += 		rmnet_ctl_client.o \
 			rmnet_ctl_ipa.o \
 			rmnet_ctl_mhi.o
@@ -39,6 +39,8 @@ KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
 
 KBUILD_OPTIONS := RMNET_CORE_ROOT=$(PWD)
 KBUILD_OPTIONS += MODNAME?=rmnet_core
+KBUILD_OPTIONS += KBUILD_EXTRA_SYMBOLS=$(M)/../../datarmnet-ext/mem/Module.symvers
+KBUILD_OPTIONS += KBUILD_EXTRA_SYMBOLS+=$(M)/../../dataipa/drivers/platform/msm/Module.symvers
 
 all:
 	$(MAKE) -C $(KERNEL_SRC) M=$(M) modules $(KBUILD_OPTIONS)

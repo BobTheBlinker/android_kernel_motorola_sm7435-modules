@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -22,7 +22,11 @@
 #include <linux/shmem_fs.h>
 #include <linux/dma-buf.h>
 #include <linux/pfn_t.h>
+#include <linux/version.h>
+#include <linux/module.h>
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0))
 #include <linux/ion.h>
+#endif
 
 #include "msm_drv.h"
 #include "msm_gem.h"
@@ -98,7 +102,7 @@ static struct page **get_pages(struct drm_gem_object *obj)
 			p = get_pages_vram(obj, npages);
 
 		if (IS_ERR(p)) {
-			dev_err(dev->dev, "could not get pages: %ld\n",
+			DISP_DEV_ERR(dev->dev, "could not get pages: %ld\n",
 					PTR_ERR(p));
 			return p;
 		}
@@ -109,7 +113,7 @@ static struct page **get_pages(struct drm_gem_object *obj)
 		if (IS_ERR(msm_obj->sgt)) {
 			void *ptr = ERR_CAST(msm_obj->sgt);
 
-			dev_err(dev->dev, "failed to allocate sgt\n");
+			DISP_DEV_ERR(dev->dev, "failed to allocate sgt\n");
 			msm_obj->sgt = NULL;
 			return ptr;
 		}
@@ -220,8 +224,12 @@ int msm_gem_mmap_obj(struct drm_gem_object *obj,
 {
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 25))
 	vma->vm_flags &= ~VM_PFNMAP;
 	vma->vm_flags |= VM_MIXEDMAP;
+#else
+	vm_flags_mod(vma, VM_MIXEDMAP, VM_PFNMAP);
+#endif
 
 	if (msm_obj->flags & MSM_BO_WC) {
 		vma->vm_page_prot = pgprot_writecombine(vm_get_page_prot(vma->vm_flags));
@@ -257,7 +265,11 @@ int msm_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 	return msm_gem_mmap_obj(vma->vm_private_data, vma);
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+static vm_fault_t msm_gem_fault(struct vm_fault *vmf)
+#else
 vm_fault_t msm_gem_fault(struct vm_fault *vmf)
+#endif
 {
 	struct vm_area_struct *vma = vmf->vma;
 	struct drm_gem_object *obj = vma->vm_private_data;
@@ -318,7 +330,7 @@ static uint64_t mmap_offset(struct drm_gem_object *obj)
 	ret = drm_gem_create_mmap_offset(obj);
 
 	if (ret) {
-		dev_err(dev->dev, "could not allocate mmap offset\n");
+		DISP_DEV_ERR(dev->dev, "could not allocate mmap offset\n");
 		return 0;
 	}
 
@@ -342,8 +354,12 @@ dma_addr_t msm_gem_get_dma_addr(struct drm_gem_object *obj)
 	struct sg_table *sgt;
 
 	if (!msm_obj->sgt) {
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+		sgt = dma_buf_map_attachment_unlocked(obj->import_attach, DMA_BIDIRECTIONAL);
+#else
 		sgt = dma_buf_map_attachment(obj->import_attach,
 						DMA_BIDIRECTIONAL);
+#endif
 		if (IS_ERR_OR_NULL(sgt)) {
 			DRM_ERROR("dma_buf_map_attachment failure, err=%ld\n",
 					PTR_ERR(sgt));
@@ -352,7 +368,7 @@ dma_addr_t msm_gem_get_dma_addr(struct drm_gem_object *obj)
 		msm_obj->sgt = sgt;
 	}
 
-	return sg_phys(msm_obj->sgt->sgl);
+	return sg_dma_address(msm_obj->sgt->sgl);
 }
 
 static struct msm_gem_vma *add_vma(struct drm_gem_object *obj,
@@ -428,20 +444,20 @@ static int msm_gem_get_iova_locked(struct drm_gem_object *obj,
 {
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
 	struct msm_gem_vma *vma;
+	struct device *dev;
 	int ret = 0;
 
 	WARN_ON(!mutex_is_locked(&msm_obj->lock));
 
 	vma = lookup_vma(obj, aspace);
 
+	dev = msm_gem_get_aspace_device(aspace);
 	if (!vma) {
 		struct page **pages;
-		struct device *dev;
 		struct dma_buf *dmabuf;
 		bool reattach = false;
 		unsigned long dma_map_attrs;
 
-		dev = msm_gem_get_aspace_device(aspace);
 		if ((dev && obj->import_attach) &&
 				((dev != obj->import_attach->dev) ||
 				msm_obj->obj_dirty)) {
@@ -465,8 +481,13 @@ static int msm_gem_get_iova_locked(struct drm_gem_object *obj,
 					 msm_obj->obj_dirty);
 
 			if (msm_obj->sgt)
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+				dma_buf_unmap_attachment_unlocked(obj->import_attach,
+					msm_obj->sgt, DMA_BIDIRECTIONAL);
+#else
 				dma_buf_unmap_attachment(obj->import_attach,
 					msm_obj->sgt, DMA_BIDIRECTIONAL);
+#endif
 			dma_buf_detach(dmabuf, obj->import_attach);
 
 			obj->import_attach = dma_buf_attach(dmabuf, dev);
@@ -524,56 +545,15 @@ static int msm_gem_get_iova_locked(struct drm_gem_object *obj,
 		msm_gem_add_obj_to_aspace_active_list(aspace, obj);
 		mutex_unlock(&aspace->list_lock);
 	}
+	if (dev && !dev_is_dma_coherent(dev) && (msm_obj->flags & MSM_BO_CACHED)){
+		dma_sync_sg_for_cpu(dev, msm_obj->sgt->sgl,
+				msm_obj->sgt->nents, DMA_BIDIRECTIONAL);
+	}
 
 	return 0;
 
 fail:
 	del_vma(vma);
-	return ret;
-}
-static int msm_gem_pin_iova(struct drm_gem_object *obj,
-		struct msm_gem_address_space *aspace)
-{
-	struct msm_gem_object *msm_obj = to_msm_bo(obj);
-	struct msm_gem_vma *vma;
-	struct page **pages;
-
-	WARN_ON(!mutex_is_locked(&msm_obj->lock));
-
-	if (WARN_ON(msm_obj->madv != MSM_MADV_WILLNEED))
-		return -EBUSY;
-
-	vma = lookup_vma(obj, aspace);
-	if (WARN_ON(!vma))
-		return -EINVAL;
-
-	pages = get_pages(obj);
-	if (IS_ERR(pages))
-		return PTR_ERR(pages);
-
-	return msm_gem_map_vma(aspace, vma, msm_obj->sgt,
-			obj->size >> PAGE_SHIFT, msm_obj->flags);
-}
-
-/* get iova and pin it. Should have a matching put */
-int msm_gem_get_and_pin_iova(struct drm_gem_object *obj,
-		struct msm_gem_address_space *aspace, uint64_t *iova)
-{
-	struct msm_gem_object *msm_obj = to_msm_bo(obj);
-	u64 local;
-	int ret;
-
-	mutex_lock(&msm_obj->lock);
-
-	ret = msm_gem_get_iova_locked(obj, aspace, &local);
-
-	if (!ret)
-		ret = msm_gem_pin_iova(obj, aspace);
-
-	if (!ret)
-		*iova = local;
-
-	mutex_unlock(&msm_obj->lock);
 	return ret;
 }
 
@@ -730,12 +710,17 @@ fail:
 static void *get_vaddr(struct drm_gem_object *obj, unsigned madv)
 {
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+	struct iosys_map map;
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	struct dma_buf_map map;
+#endif
 	int ret = 0;
 
 	mutex_lock(&msm_obj->lock);
 
 	if (WARN_ON(msm_obj->madv > madv)) {
-		dev_err(obj->dev->dev, "Invalid madv state: %u vs %u\n",
+		DISP_DEV_ERR(obj->dev->dev, "Invalid madv state: %u vs %u\n",
 			msm_obj->madv, madv);
 		mutex_unlock(&msm_obj->lock);
 		return ERR_PTR(-EBUSY);
@@ -764,8 +749,19 @@ static void *get_vaddr(struct drm_gem_object *obj, unsigned madv)
 					goto fail;
 			}
 
-			msm_obj->vaddr =
-				dma_buf_vmap(obj->import_attach->dmabuf);
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+			ret = dma_buf_vmap_unlocked(obj->import_attach->dmabuf, &map);
+			if (ret)
+				goto fail;
+			msm_obj->vaddr = map.vaddr;
+#elif (KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE)
+			ret = dma_buf_vmap(obj->import_attach->dmabuf, &map);
+			if (ret)
+				goto fail;
+			msm_obj->vaddr = map.vaddr;
+#else
+			msm_obj->vaddr = dma_buf_vmap(obj->import_attach->dmabuf);
+#endif
 		} else {
 			msm_obj->vaddr = vmap(pages, obj->size >> PAGE_SHIFT,
 				VM_MAP, PAGE_KERNEL);
@@ -789,17 +785,6 @@ fail:
 void *msm_gem_get_vaddr(struct drm_gem_object *obj)
 {
 	return get_vaddr(obj, MSM_MADV_WILLNEED);
-}
-
-/*
- * Don't use this!  It is for the very special case of dumping
- * submits from GPU hangs or faults, were the bo may already
- * be MSM_MADV_DONTNEED, but we know the buffer is still on the
- * active list.
- */
-void *msm_gem_get_vaddr_active(struct drm_gem_object *obj)
-{
-	return get_vaddr(obj, __MSM_MADV_PURGED);
 }
 
 void msm_gem_put_vaddr(struct drm_gem_object *obj)
@@ -833,50 +818,14 @@ int msm_gem_madvise(struct drm_gem_object *obj, unsigned madv)
 	return (madv != __MSM_MADV_PURGED);
 }
 
-void msm_gem_purge(struct drm_gem_object *obj, enum msm_gem_lock subclass)
-{
-	struct drm_device *dev = obj->dev;
-	struct msm_gem_object *msm_obj = to_msm_bo(obj);
-
-	WARN_ON(!mutex_is_locked(&dev->struct_mutex));
-	WARN_ON(!is_purgeable(msm_obj));
-	WARN_ON(obj->import_attach);
-
-	mutex_lock_nested(&msm_obj->lock, subclass);
-
-	put_iova(obj);
-	if (msm_obj->aspace) {
-		mutex_lock(&msm_obj->aspace->list_lock);
-		msm_gem_remove_obj_from_aspace_active_list(msm_obj->aspace,
-				obj);
-		mutex_unlock(&msm_obj->aspace->list_lock);
-	}
-
-	msm_gem_vunmap_locked(obj);
-
-	put_pages(obj);
-
-	msm_obj->madv = __MSM_MADV_PURGED;
-
-	drm_vma_node_unmap(&obj->vma_node, dev->anon_inode->i_mapping);
-	drm_gem_free_mmap_offset(obj);
-
-	/* Our goal here is to return as much of the memory as
-	 * is possible back to the system as we are called from OOM.
-	 * To do this we must instruct the shmfs to drop all of its
-	 * backing pages, *now*.
-	 */
-	shmem_truncate_range(file_inode(obj->filp), 0, (loff_t)-1);
-
-	invalidate_mapping_pages(file_inode(obj->filp)->i_mapping,
-			0, (loff_t)-1);
-
-	mutex_unlock(&msm_obj->lock);
-}
-
 static void msm_gem_vunmap_locked(struct drm_gem_object *obj)
 {
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+	struct iosys_map map = IOSYS_MAP_INIT_VADDR(msm_obj->vaddr);
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	struct dma_buf_map map = DMA_BUF_MAP_INIT_VADDR(msm_obj->vaddr);
+#endif
 
 	WARN_ON(!mutex_is_locked(&msm_obj->lock));
 
@@ -884,7 +833,13 @@ static void msm_gem_vunmap_locked(struct drm_gem_object *obj)
 		return;
 
 	if (obj->import_attach) {
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+		dma_buf_vunmap_unlocked(obj->import_attach->dmabuf, &map);
+#elif (KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE)
+		dma_buf_vunmap(obj->import_attach->dmabuf, &map);
+#else
 		dma_buf_vunmap(obj->import_attach->dmabuf, msm_obj->vaddr);
+#endif
 		if (obj->dev && obj->dev->dev && !dev_is_dma_coherent(obj->dev->dev))
 			dma_buf_end_cpu_access(obj->import_attach->dmabuf, DMA_BIDIRECTIONAL);
 	} else {
@@ -911,8 +866,11 @@ int msm_gem_cpu_prep(struct drm_gem_object *obj, uint32_t op, ktime_t *timeout)
 		op & MSM_PREP_NOSYNC ? 0 : timeout_to_jiffies(timeout);
 	long ret;
 
-	ret = dma_resv_wait_timeout_rcu(msm_obj->resv, write,
-						  true,  remain);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	ret = dma_resv_wait_timeout(msm_obj->resv, write, true, remain);
+#else
+	ret = dma_resv_wait_timeout_rcu(msm_obj->resv, write, true, remain);
+#endif
 	if (ret == 0)
 		return remain == 0 ? -EBUSY : -ETIMEDOUT;
 	else if (ret < 0)
@@ -929,105 +887,17 @@ int msm_gem_cpu_fini(struct drm_gem_object *obj)
 	return 0;
 }
 
-#ifdef CONFIG_DEBUG_FS
-static void describe_fence(struct dma_fence *fence, const char *type,
-		struct seq_file *m)
-{
-	if (!dma_fence_is_signaled(fence))
-		seq_printf(m, "\t%9s: %s %s seq %llu\n", type,
-				fence->ops->get_driver_name(fence),
-				fence->ops->get_timeline_name(fence),
-				fence->seqno);
-}
-
-void msm_gem_describe(struct drm_gem_object *obj, struct seq_file *m)
-{
-	struct msm_gem_object *msm_obj = to_msm_bo(obj);
-	struct dma_resv *robj = msm_obj->resv;
-	struct dma_resv_list *fobj;
-	struct dma_fence *fence;
-	struct msm_gem_vma *vma;
-	uint64_t off = drm_vma_node_start(&obj->vma_node);
-	const char *madv;
-
-	mutex_lock(&msm_obj->lock);
-
-	switch (msm_obj->madv) {
-	case __MSM_MADV_PURGED:
-		madv = " purged";
-		break;
-	case MSM_MADV_DONTNEED:
-		madv = " purgeable";
-		break;
-	case MSM_MADV_WILLNEED:
-	default:
-		madv = "";
-		break;
-	}
-
-	seq_printf(m, "%08x: %c %2d (%2d) %08llx %pK\t",
-			msm_obj->flags, is_active(msm_obj) ? 'A' : 'I',
-			obj->name, kref_read(&obj->refcount),
-			off, msm_obj->vaddr);
-
-	seq_printf(m, " %08zu %9s %-32s\n", obj->size, madv, msm_obj->name);
-
-	if (!list_empty(&msm_obj->vmas)) {
-
-		seq_puts(m, "      vmas:");
-
-		list_for_each_entry(vma, &msm_obj->vmas, list)
-			seq_printf(m, " [%s: %08llx,%s,inuse=%d]", vma->aspace->name,
-				vma->iova, vma->mapped ? "mapped" : "unmapped",
-				vma->inuse);
-
-		seq_puts(m, "\n");
-	}
-
-	rcu_read_lock();
-	fobj = rcu_dereference(robj->fence);
-	if (fobj) {
-		unsigned int i, shared_count = fobj->shared_count;
-
-		for (i = 0; i < shared_count; i++) {
-			fence = rcu_dereference(fobj->shared[i]);
-			describe_fence(fence, "Shared", m);
-		}
-	}
-
-	fence = rcu_dereference(robj->fence_excl);
-	if (fence)
-		describe_fence(fence, "Exclusive", m);
-	rcu_read_unlock();
-
-	mutex_unlock(&msm_obj->lock);
-}
-
-void msm_gem_describe_objects(struct list_head *list, struct seq_file *m)
-{
-	struct msm_gem_object *msm_obj;
-	int count = 0;
-	size_t size = 0;
-
-	seq_puts(m, "   flags       id ref  offset   kaddr            size     madv      name\n");
-	list_for_each_entry(msm_obj, list, mm_list) {
-		struct drm_gem_object *obj = &msm_obj->base;
-		seq_puts(m, "   ");
-		msm_gem_describe(obj, m);
-		count++;
-		size += obj->size;
-	}
-
-	seq_printf(m, "Total %d objects, %zu bytes\n", count, size);
-}
-#endif
-
 /* don't call directly!  Use drm_gem_object_put() and friends */
 void msm_gem_free_object(struct drm_gem_object *obj)
 {
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
 	struct drm_device *dev = obj->dev;
 	struct msm_drm_private *priv = dev->dev_private;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+	struct iosys_map map = IOSYS_MAP_INIT_VADDR(msm_obj->vaddr);
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	struct dma_buf_map map = DMA_BUF_MAP_INIT_VADDR(msm_obj->vaddr);
+#endif
 
 	/* object should not be on active list: */
 	WARN_ON(is_active(msm_obj));
@@ -1048,7 +918,13 @@ void msm_gem_free_object(struct drm_gem_object *obj)
 
 	if (obj->import_attach) {
 		if (msm_obj->vaddr)
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+			dma_buf_vunmap_unlocked(obj->import_attach->dmabuf, &map);
+#elif (KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE)
+			dma_buf_vunmap(obj->import_attach->dmabuf, &map);
+#else
 			dma_buf_vunmap(obj->import_attach->dmabuf, msm_obj->vaddr);
+#endif
 
 		/* Don't drop the pages for imported dmabuf, as they are not
 		 * ours, just free the array we allocated:
@@ -1095,6 +971,31 @@ int msm_gem_new_handle(struct drm_device *dev, struct drm_file *file,
 	return ret;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+static const struct vm_operations_struct vm_ops = {
+	.fault = msm_gem_fault,
+	.open = drm_gem_vm_open,
+	.close = drm_gem_vm_close,
+};
+
+static const struct drm_gem_object_funcs msm_gem_object_funcs = {
+	.free = msm_gem_free_object,
+	.pin = msm_gem_prime_pin,
+	.unpin = msm_gem_prime_unpin,
+	.get_sg_table = msm_gem_prime_get_sg_table,
+	.vmap = msm_gem_prime_vmap,
+	.vunmap = msm_gem_prime_vunmap,
+	.vm_ops = &vm_ops,
+};
+#endif
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+static int msm_gem_new_impl(struct drm_device *dev,
+		uint32_t size, uint32_t flags,
+		struct dma_resv *resv,
+		struct drm_gem_object **obj)
+{
+#else
 static int msm_gem_new_impl(struct drm_device *dev,
 		uint32_t size, uint32_t flags,
 		struct dma_resv *resv,
@@ -1102,6 +1003,7 @@ static int msm_gem_new_impl(struct drm_device *dev,
 		bool struct_mutex_locked)
 {
 	struct msm_drm_private *priv = dev->dev_private;
+#endif
 	struct msm_gem_object *msm_obj;
 
 	switch (flags & MSM_BO_CACHE_MASK) {
@@ -1110,7 +1012,7 @@ static int msm_gem_new_impl(struct drm_device *dev,
 	case MSM_BO_WC:
 		break;
 	default:
-		dev_err(dev->dev, "invalid cache flag: %x\n",
+		DISP_DEV_ERR(dev->dev, "invalid cache flag: %x\n",
 				(flags & MSM_BO_CACHE_MASK));
 		return -EINVAL;
 	}
@@ -1141,19 +1043,29 @@ static int msm_gem_new_impl(struct drm_device *dev,
 	msm_obj->in_active_list = false;
 	msm_obj->obj_dirty = false;
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0))
 	mutex_lock(&priv->mm_lock);
 	list_add_tail(&msm_obj->mm_list, &priv->inactive_list);
 	mutex_unlock(&priv->mm_lock);
+#endif
 
 	*obj = &msm_obj->base;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	(*obj)->funcs = &msm_gem_object_funcs;
+#endif
 
 	return 0;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+struct drm_gem_object *msm_gem_new(struct drm_device *dev, uint32_t size, uint32_t flags)
+#else
 static struct drm_gem_object *_msm_gem_new(struct drm_device *dev,
 		uint32_t size, uint32_t flags, bool struct_mutex_locked)
+#endif
 {
 	struct msm_drm_private *priv = dev->dev_private;
+	struct msm_gem_object *msm_obj;
 	struct drm_gem_object *obj = NULL;
 	bool use_vram = false;
 	int ret;
@@ -1174,14 +1086,19 @@ static struct drm_gem_object *_msm_gem_new(struct drm_device *dev,
 	if (size == 0)
 		return ERR_PTR(-EINVAL);
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	ret = msm_gem_new_impl(dev, size, flags, NULL, &obj);
+#else
 	ret = msm_gem_new_impl(dev, size, flags, NULL, &obj, struct_mutex_locked);
+#endif
 	if (ret)
 		goto fail;
+
+	msm_obj = to_msm_bo(obj);
 
 	if (use_vram) {
 		struct msm_gem_vma *vma;
 		struct page **pages;
-		struct msm_gem_object *msm_obj = to_msm_bo(obj);
 
 		mutex_lock(&msm_obj->lock);
 
@@ -1207,7 +1124,21 @@ static struct drm_gem_object *_msm_gem_new(struct drm_device *dev,
 		ret = drm_gem_object_init(dev, obj, size);
 		if (ret)
 			goto fail;
+
+		/*
+		 * Our buffers are kept pinned, so allocating them from the
+		 * MOVABLE zone is a really bad idea, and conflicts with CMA.
+		 * See comments above new_inode() why this is required _and_
+		 * expected if you're going to pin these pages.
+		 */
+		mapping_set_gfp_mask(obj->filp->f_mapping, GFP_HIGHUSER);
 	}
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	mutex_lock(&priv->mm_lock);
+	list_add_tail(&msm_obj->mm_list, &priv->inactive_list);
+	mutex_unlock(&priv->mm_lock);
+#endif
 
 	return obj;
 
@@ -1216,6 +1147,7 @@ fail:
 	return ERR_PTR(ret);
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0))
 struct drm_gem_object *msm_gem_new_locked(struct drm_device *dev,
 		uint32_t size, uint32_t flags)
 {
@@ -1227,6 +1159,7 @@ struct drm_gem_object *msm_gem_new(struct drm_device *dev,
 {
 	return _msm_gem_new(dev, size, flags, false);
 }
+#endif
 
 int msm_gem_delayed_import(struct drm_gem_object *obj)
 {
@@ -1250,14 +1183,15 @@ int msm_gem_delayed_import(struct drm_gem_object *obj)
 	attach = obj->import_attach;
 	attach->dma_map_attrs |= DMA_ATTR_DELAYED_UNMAP;
 
-	if (msm_obj->flags & MSM_BO_SKIPSYNC)
-		attach->dma_map_attrs |= DMA_ATTR_SKIP_CPU_SYNC;
-
 	/*
 	 * dma_buf_map_attachment will call dma_map_sg for ion buffer
 	 * mapping, and iova will get mapped when the function returns.
 	 */
+#if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
+	sgt = dma_buf_map_attachment_unlocked(attach, DMA_BIDIRECTIONAL);
+#else
 	sgt = dma_buf_map_attachment(attach, DMA_BIDIRECTIONAL);
+#endif
 	if (IS_ERR(sgt)) {
 		ret = PTR_ERR(sgt);
 		DRM_ERROR("dma_buf_map_attachment failure, err=%d\n",
@@ -1274,16 +1208,21 @@ fail_import:
 struct drm_gem_object *msm_gem_import(struct drm_device *dev,
 		struct dma_buf *dmabuf, struct sg_table *sgt)
 {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	struct msm_drm_private *priv = dev->dev_private;
+#endif
 	struct msm_gem_object *msm_obj;
 	struct drm_gem_object *obj = NULL;
 	uint32_t size;
 	int ret;
-	unsigned long flags = 0;
 
 	size = PAGE_ALIGN(dmabuf->size);
 
-	ret = msm_gem_new_impl(dev, size, MSM_BO_WC, dmabuf->resv, &obj,
-			false);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	ret = msm_gem_new_impl(dev, size, MSM_BO_WC, dmabuf->resv, &obj);
+#else
+	ret = msm_gem_new_impl(dev, size, MSM_BO_WC, dmabuf->resv, &obj, false);
+#endif
 	if (ret)
 		goto fail;
 
@@ -1305,19 +1244,14 @@ struct drm_gem_object *msm_gem_import(struct drm_device *dev,
 	 */
 	msm_obj->flags |= MSM_BO_EXTBUF;
 
-	/*
-	 * For all uncached buffers, there is no need to perform cache
-	 * maintenance on dma map/unmap time.
-	 */
-	ret = dma_buf_get_flags(dmabuf, &flags);
-	if (ret) {
-		DRM_ERROR("dma_buf_get_flags failure, err=%d\n", ret);
-	} else if ((flags & ION_FLAG_CACHED) == 0) {
-		DRM_DEBUG("Buffer is uncached type\n");
-		msm_obj->flags |= MSM_BO_SKIPSYNC;
-	}
-
 	mutex_unlock(&msm_obj->lock);
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	mutex_lock(&priv->mm_lock);
+	list_add_tail(&msm_obj->mm_list, &priv->inactive_list);
+	mutex_unlock(&priv->mm_lock);
+#endif
+
 	return obj;
 
 fail:
@@ -1325,6 +1259,7 @@ fail:
 	return ERR_PTR(ret);
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0))
 static void *_msm_gem_kernel_new(struct drm_device *dev, uint32_t size,
 		uint32_t flags, struct msm_gem_address_space *aspace,
 		struct drm_gem_object **bo, uint64_t *iova, bool locked)
@@ -1391,6 +1326,7 @@ void msm_gem_kernel_put(struct drm_gem_object *bo,
 	else
 		drm_gem_object_put(bo);
 }
+#endif
 
 void msm_gem_object_set_name(struct drm_gem_object *bo, const char *fmt, ...)
 {
@@ -1473,3 +1409,7 @@ exit:
 
 	return ret;
 }
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
+MODULE_IMPORT_NS(DMA_BUF);
+#endif

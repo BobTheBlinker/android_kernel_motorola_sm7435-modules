@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
  */
 
+#define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 #include "sde_hw_mdss.h"
 #include "sde_hwio.h"
 #include "sde_hw_catalog.h"
@@ -368,7 +370,7 @@ static struct sde_vdc_cfg *_vdc_offset(enum sde_vdc vdc,
 			b->base_off = addr;
 			b->blk_off = m->vdc[i].base;
 			b->length = m->vdc[i].len;
-			b->hwversion = m->hwversion;
+			b->hw_rev = m->hw_rev;
 			b->log_mask = SDE_DBG_MASK_VDC;
 			return &m->vdc[i];
 		}
@@ -385,18 +387,12 @@ static void _setup_vdc_ops(struct sde_hw_vdc_ops *ops,
 	ops->bind_pingpong_blk = sde_hw_vdc_bind_pingpong_blk;
 }
 
-static struct sde_hw_blk_ops sde_hw_ops = {
-	.start = NULL,
-	.stop = NULL,
-};
-
-struct sde_hw_vdc *sde_hw_vdc_init(enum sde_vdc idx,
+struct sde_hw_blk_reg_map *sde_hw_vdc_init(enum sde_vdc idx,
 		void __iomem *addr,
 		struct sde_mdss_cfg *m)
 {
 	struct sde_hw_vdc *c;
 	struct sde_vdc_cfg *cfg;
-	int rc;
 	u32 vdc_ctl_reg;
 	char blk_name[32];
 
@@ -414,12 +410,6 @@ struct sde_hw_vdc *sde_hw_vdc_init(enum sde_vdc idx,
 	c->caps = cfg;
 
 	_setup_vdc_ops(&c->ops, c->caps->features);
-
-	rc = sde_hw_blk_init(&c->base, SDE_HW_BLK_VDC, idx, &sde_hw_ops);
-	if (rc) {
-		SDE_ERROR("failed to init hw blk %d\n", rc);
-		goto blk_init_error;
-	}
 
 	if (_vdc_subblk_offset(c, SDE_VDC_CTL, &vdc_ctl_reg)) {
 		SDE_ERROR("vdc ctl not found\n");
@@ -450,18 +440,12 @@ struct sde_hw_vdc *sde_hw_vdc_init(enum sde_vdc idx,
 			c->caps->sblk->ctl.len,
 			c->hw.xin_id);
 
-	return c;
-
-blk_init_error:
-	kfree(c);
-
-	return ERR_PTR(rc);
+	return &c->hw;
 }
 
-void sde_hw_vdc_destroy(struct sde_hw_vdc *vdc)
+void sde_hw_vdc_destroy(struct sde_hw_blk_reg_map *hw)
 {
-	if (vdc) {
-		sde_hw_blk_destroy(&vdc->base);
-		kfree(vdc);
+	if (hw) {
+		kfree(to_sde_hw_vdc(hw));
 	}
 }

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -15,11 +15,11 @@
 #include "msm_prop.h"
 #include "sde_kms.h"
 #include "sde_fence.h"
-#include "sde_motUtil.h"
 
 #define SDE_CONNECTOR_NAME_SIZE	16
 #define SDE_CONNECTOR_DHDR_MEMPOOL_MAX_SIZE	SZ_32
 #define MAX_CMD_RECEIVE_SIZE       256
+#define DNSC_BLUR_MAX_COUNT	1
 
 struct sde_connector;
 struct sde_connector_state;
@@ -287,37 +287,12 @@ struct sde_connector_ops {
 	 * @cmd_buf_len: Command buffer length in bytes
 	 * @recv_buf: rx buffer
 	 * @recv_buf_len: rx buffer length
+	 * @ts: time stamp in nano-seconds of when the command was received
 	 * Returns: number of bytes read, if successful, negative for failure
 	 */
 
 	int (*cmd_receive)(void *display, const char *cmd_buf,
-			   u32 cmd_buf_len, u8 *recv_buf, u32 recv_buf_len);
-
-	/**
-	 * motUtil_transfer - Convert motUtil data and Transfer command
-	 * 			to the connected display panel
-	 * @display: Pointer to private display handle
-	 * @cmd_buf: Command buffer
-	 * @cmd_buf_len: Command buffer length in bytes
-	 * @motUtil_data: motUtil data information
-	 * Returns: Zero for success, negetive for failure
-	 */
-	int (*motUtil_transfer)(void *display, const char *cmd_buf,
-			u32 cmd_buf_len, struct motUtil *motUtil_data);
-
-	/**
-	 * force_esd_disable - force to disable check_status
-	 * @display: Pointer to private display handle
-	 * Returns: true for forcing ESD disable
-	 */
-	bool (*force_esd_disable)(void *display);
-
-	/**
-	 * set_param - set display's feature param setting
-	 * @display: Pointer to private display handle
-	 * Returns: Zero for success, negative for failure
-	 */
-	int (*set_param)(void *display, struct msm_param_info *param_info);
+			   u32 cmd_buf_len, u8 *recv_buf, u32 recv_buf_len, ktime_t *ts);
 
 	/**
 	 * config_hdr - configure HDR
@@ -433,12 +408,11 @@ struct sde_connector_ops {
 	int (*get_qsync_min_fps)(struct drm_connector_state *conn_state);
 
 	/**
-	 * get_avr_step_req - Get the required avr_step for given fps rate
-	 * @display: Pointer to private display structure
-	 * @mode_fps: Fps value in dfps list
+	 * get_avr_step_fps - Get the required avr_step for given fps rate
+	 * @conn_state: Pointer to drm_connector_state structure
 	 * Returns: AVR step fps value on success
 	 */
-	int (*get_avr_step_req)(void *display, u32 mode_fps);
+	int (*get_avr_step_fps)(struct drm_connector_state *conn_state);
 
 	/**
 	 * set_submode_info - populate given sub mode blob
@@ -457,6 +431,33 @@ struct sde_connector_ops {
 	 */
 	int (*get_num_lm_from_mode)(void *display, const struct drm_display_mode *mode);
 
+	/*
+	 * update_transfer_time - Update transfer time
+	 * @display: Pointer to private display structure
+	 * @transfer_time: new transfer time to be updated
+	 */
+	int (*update_transfer_time)(void *display, u32 transfer_time);
+
+	/*
+	 * get_panel_scan_line -  get panel scan line
+	 * @display: Pointer to private display structure
+	 * @scan_line: Pointer to scan_line buffer value
+	 * @scan_line_ts:   scan line time stamp value in nano-seconds
+	 */
+	int (*get_panel_scan_line)(void *display, u16 *scan_line, ktime_t *scan_line_ts);
+
+};
+
+/**
+ * enum sde_connector_avr_step_state: states of avr step fps
+ * @AVR_STEP_NONE: no-op
+ * @AVR_STEP_ENABLE: enable AVR step
+ * #AVR_STEP_DISABLE: disable AVR step
+ */
+enum sde_connector_avr_step_state {
+	AVR_STEP_NONE,
+	AVR_STEP_ENABLE,
+	AVR_STEP_DISABLE,
 };
 
 /**
@@ -499,6 +500,18 @@ struct sde_connector_dyn_hdr_metadata {
 	u8 dynamic_hdr_payload[SDE_CONNECTOR_DHDR_MEMPOOL_MAX_SIZE];
 	int dynamic_hdr_payload_size;
 	bool dynamic_hdr_update;
+};
+
+/**
+ * struct sde_misr_sign - defines sde misr signature structure
+ * @num_valid_misr : count of valid misr signature
+ * @roi_list : list of roi
+ * @misr_sign_value : list of misr signature
+ */
+struct sde_misr_sign {
+	atomic64_t num_valid_misr;
+	struct msm_roi_list roi_list;
+	u64 misr_sign_value[MAX_DSI_DISPLAYS];
 };
 
 /**
@@ -554,13 +567,16 @@ struct sde_connector_dyn_hdr_metadata {
  * @dimming_bl_notify_enabled: Flag to indicate if dimming bl notify is enabled or not
  * @qsync_mode: Cached Qsync mode, 0=disabled, 1=continuous mode
  * @qsync_updated: Qsync settings were updated
- * @avr_step: fps rate for fixed steps in AVR mode; 0 means step is disabled
+ * @ept_fps: ept fps is updated, 0 means ept_fps is disabled
  * @colorspace_updated: Colorspace property was updated
  * @last_cmd_tx_sts: status of the last command transfer
  * @hdr_capable: external hdr support present
  * @cmd_rx_buf: the return buffer of response of command transfer
  * @rx_len: the length of dcs command received buffer
  * @cached_edid: cached edid data for the connector
+ * @misr_event_notify_enabled: Flag to indicate if misr event notify is enabled or not
+ * @previous_misr_sign: store previous misr signature
+ * @hwfence_wb_retire_fences_enable: enable hw-fences for wb retire-fence
  */
 struct sde_connector {
 	struct drm_connector base;
@@ -622,12 +638,11 @@ struct sde_connector {
 
 	u32 color_enc_fmt;
 	u32 lm_mask;
-	bool is_fsc;
 
 	u8 hdr_plus_app_ver;
 	u32 qsync_mode;
 	bool qsync_updated;
-	u32 avr_step;
+	u32 ept_fps;
 
 	bool colorspace_updated;
 
@@ -638,6 +653,10 @@ struct sde_connector {
 	int rx_len;
 
 	struct edid *cached_edid;
+	bool misr_event_notify_enabled;
+	struct sde_misr_sign previous_misr_sign;
+
+	bool hwfence_wb_retire_fences_enable;
 };
 
 /**
@@ -680,13 +699,6 @@ struct sde_connector {
 	((C) ? to_sde_connector((C))->qsync_mode : 0)
 
 /**
- * sde_connector_get_avr_step - get sde connector's avr_step
- * @C: Pointer to drm connector structure
- * Returns: Current cached avr_step value for given connector
- */
-#define sde_connector_get_avr_step(C) ((C) ? to_sde_connector((C))->avr_step : 0)
-
-/**
  * sde_connector_get_propinfo - get sde connector's property info pointer
  * @C: Pointer to drm connector structure
  * Returns: Pointer to associated private property info structure
@@ -709,6 +721,10 @@ struct sde_connector {
  * @old_topology_name: topology of previous atomic state. remove this in later
  *	kernel versions which provide drm_atomic_state old_state pointers
  * @cont_splash_populated: State was populated as part of cont. splash
+ * @dnsc_blur_count: Number of downscale blur blocks used
+ * @dnsc_blur_cfg: Configs for the downscale blur block
+ * @dnsc_blur_lut: LUT idx used for the Gaussian filter LUTs in downscale blur block
+ * @usage_type: WB connector usage type
  */
 struct sde_connector_state {
 	struct drm_connector_state base;
@@ -725,6 +741,11 @@ struct sde_connector_state {
 	enum sde_rm_topology_name old_topology_name;
 
 	bool cont_splash_populated;
+
+	u32 dnsc_blur_count;
+	struct sde_drm_dnsc_blur_cfg dnsc_blur_cfg[DNSC_BLUR_MAX_COUNT];
+	u32 dnsc_blur_lut;
+	enum sde_wb_usage_type usage_type;
 };
 
 /**
@@ -761,6 +782,29 @@ struct sde_connector_state {
  */
 #define sde_connector_get_out_fb(S) \
 	((S) ? to_sde_connector_state((S))->out_fb : 0)
+
+/**
+ * sde_connector_get_kms - helper to get sde_kms from connector
+ * @conn: Pointer to drm connector
+ * Returns: Pointer to sde_kms or NULL
+ */
+static inline struct sde_kms *sde_connector_get_kms(struct drm_connector *conn)
+{
+	struct msm_drm_private *priv;
+
+	if (!conn || !conn->dev || !conn->dev->dev_private) {
+		SDE_ERROR("invalid connector\n");
+		return NULL;
+	}
+
+	priv = conn->dev->dev_private;
+	if (!priv->kms) {
+		SDE_ERROR("invalid kms\n");
+		return NULL;
+	}
+
+	return to_sde_kms(priv->kms);
+}
 
 /**
  * sde_connector_get_topology_name - helper accessor to retrieve topology_name
@@ -840,6 +884,36 @@ static inline uint64_t sde_connector_get_lp(
 		return 0;
 	return sde_connector_get_property(connector->state,
 			CONNECTOR_PROP_LP);
+}
+
+/**
+ * sde_connector_get_dnsc_blur_io_res - populates the downscale blur src/dst w/h
+ * @state: pointer to drm connector state
+ * @res: pointer to the output struct to populate the src/dst
+ */
+static inline void sde_connector_get_dnsc_blur_io_res(struct drm_connector_state *state,
+		struct sde_io_res *res)
+{
+	struct sde_connector_state *sde_conn_state;
+	int i;
+
+	if (!state || !res)
+		return;
+
+	memset(res, 0, sizeof(struct sde_io_res));
+
+	sde_conn_state = to_sde_connector_state(state);
+	if (!sde_conn_state->dnsc_blur_count ||
+			!(sde_conn_state->dnsc_blur_cfg[0].flags & DNSC_BLUR_EN))
+		return;
+
+	res->enabled = true;
+	for (i = 0; i < sde_conn_state->dnsc_blur_count; i++) {
+		res->src_w += sde_conn_state->dnsc_blur_cfg[i].src_width;
+		res->dst_w += sde_conn_state->dnsc_blur_cfg[i].dst_width;
+	}
+	res->src_h = sde_conn_state->dnsc_blur_cfg[0].src_height;
+	res->dst_h = sde_conn_state->dnsc_blur_cfg[0].dst_height;
 }
 
 /**
@@ -1111,6 +1185,24 @@ int sde_connector_get_lm_cnt_from_topology(struct drm_connector *conn,
 	 const struct drm_display_mode *drm_mode);
 
 /**
+ * sde_conn_get_max_mode_width - retrieves the maximum width from all modes
+ * conn: Pointer to DRM connector object
+ */
+static inline u32 sde_conn_get_max_mode_width(struct drm_connector *conn)
+{
+	u32 maxw = 0;
+	struct drm_display_mode *mode;
+
+	if (!conn)
+		return maxw;
+
+	list_for_each_entry(mode, &conn->modes, head)
+		maxw = maxw > mode->hdisplay ? maxw : mode->hdisplay;
+
+	return maxw;
+}
+
+/**
  * sde_connector_state_get_topology - get topology from given connector state
  * conn_state: Pointer to the DRM connector state object
  * topology: Pointer to store topology info of the display
@@ -1154,6 +1246,45 @@ static inline int sde_connector_state_get_compression_info(
 	memcpy(comp_info, &sde_conn_state->mode_info.comp_info,
 		sizeof(struct msm_compression_info));
 	return 0;
+}
+
+static inline bool sde_connector_is_quadpipe_3d_merge_enabled(
+		struct drm_connector_state *conn_state)
+{
+	enum sde_rm_topology_name topology;
+
+	if (!conn_state)
+		return false;
+
+	topology = sde_connector_get_property(conn_state, CONNECTOR_PROP_TOPOLOGY_NAME);
+	if ((topology == SDE_RM_TOPOLOGY_QUADPIPE_3DMERGE)
+			|| (topology == SDE_RM_TOPOLOGY_QUADPIPE_3DMERGE_DSC))
+		return true;
+
+	return false;
+}
+
+static inline bool sde_connector_is_dualpipe_3d_merge_enabled(
+		struct drm_connector_state *conn_state)
+{
+	enum sde_rm_topology_name topology;
+
+	if (!conn_state)
+		return false;
+
+	topology = sde_connector_get_property(conn_state, CONNECTOR_PROP_TOPOLOGY_NAME);
+	if ((topology == SDE_RM_TOPOLOGY_DUALPIPE_3DMERGE)
+			|| (topology == SDE_RM_TOPOLOGY_DUALPIPE_3DMERGE_DSC)
+			|| (topology == SDE_RM_TOPOLOGY_DUALPIPE_3DMERGE_VDC))
+		return true;
+
+	return false;
+}
+
+static inline bool sde_connector_is_3d_merge_enabled(struct drm_connector_state *conn_state)
+{
+	return sde_connector_is_dualpipe_3d_merge_enabled(conn_state)
+		|| sde_connector_is_quadpipe_3d_merge_enabled(conn_state);
 }
 
 /**
@@ -1234,5 +1365,13 @@ int sde_connector_esd_status(struct drm_connector *connector);
 
 const char *sde_conn_get_topology_name(struct drm_connector *conn,
 		struct msm_display_topology topology);
+
+/*
+ * sde_connector_is_line_insertion_supported - get line insertion
+ * feature bit value from panel
+ * @sde_conn:    Pointer to sde connector structure
+ * @Return: line insertion support status
+ */
+bool sde_connector_is_line_insertion_supported(struct sde_connector *sde_conn);
 
 #endif /* _SDE_CONNECTOR_H_ */
