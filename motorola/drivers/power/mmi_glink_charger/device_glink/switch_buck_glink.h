@@ -23,6 +23,12 @@ struct buck_dev_info
     u32  chg_en;
     u32  chg_st;
     u32  chg_fault;
+    u32  vbus_ctrl;
+    u32  ce_en;
+    u32  battfet_dis;
+    u32  jeita_en;
+    u32  vbus_gd;
+    u32  input_det;
 };
 
 struct buck_glink_dev {
@@ -34,6 +40,9 @@ struct buck_glink_dev {
 	struct power_supply *buck_dev_psy;
 	struct buck_dev_info 	buck_info;
 	struct notifier_block	buck_nb;
+
+	struct timespec64 glink_access_time;
+	uint32_t elapsed_ms;
 };
 
 struct glink_device *switch_buck_device_register(struct mmi_glink_chip *chip, struct mmi_glink_dev_dts_info *dev_dts);

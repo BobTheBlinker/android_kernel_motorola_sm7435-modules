@@ -188,9 +188,18 @@ static int brl_reset_after(struct goodix_ts_core *cd)
 static int brl_power_on(struct goodix_ts_core *cd, bool on)
 {
 	int ret = 0;
-	int iovdd_gpio = cd->board_data.iovdd_gpio;
-	int avdd_gpio = cd->board_data.avdd_gpio;
-	int reset_gpio = cd->board_data.reset_gpio;
+	int iovdd_gpio = 0;
+	int avdd_gpio = 0;
+	int reset_gpio = 0;
+	int iovdden_gpio = 0;
+
+	if(!cd)
+		return 0;
+
+	iovdd_gpio = cd->board_data.iovdd_gpio;
+	avdd_gpio = cd->board_data.avdd_gpio;
+	reset_gpio = cd->board_data.reset_gpio;
+	iovdden_gpio = cd->board_data.iovdden_gpio;
 
 	if (on) {
 		if (iovdd_gpio > 0) {
@@ -200,6 +209,9 @@ static int brl_power_on(struct goodix_ts_core *cd, bool on)
 			if (ret < 0) {
 				ts_err("Failed to enable iovdd:%d", ret);
 				goto power_off;
+			}
+	              if (iovdden_gpio > 0){
+				gpio_direction_output(iovdden_gpio, 1);
 			}
 		}
 		usleep_range(3000, 3100);
@@ -226,8 +238,12 @@ power_off:
 	gpio_direction_output(reset_gpio, 0);
 	if (iovdd_gpio > 0)
 		gpio_direction_output(iovdd_gpio, 0);
-	else if (cd->iovdd)
+	else if (cd->iovdd){
+              if (iovdden_gpio > 0){
+		    gpio_direction_output(iovdden_gpio, 0);
+		}
 		regulator_disable(cd->iovdd);
+	}
 	if (avdd_gpio > 0)
 		gpio_direction_output(avdd_gpio, 0);
 	else if (cd->avdd)
@@ -1035,6 +1051,7 @@ static int brl_esd_check(struct goodix_ts_core *cd)
 #define GOODIX_TOUCH_EVENT			0x80
 #define GOODIX_REQUEST_EVENT		0x40
 #define GOODIX_GESTURE_EVENT		0x20
+#define GOODIX_OPEN_EVENT		    0x10
 #define POINT_TYPE_STYLUS_HOVER		0x01
 #define POINT_TYPE_STYLUS			0x03
 #if defined(CONFIG_MOTO_DDA_PASSIVESTYLUS) || defined(CONFIG_ENABLE_GTP_PALM_CANCEL_BY_ID)
@@ -1438,36 +1455,6 @@ static int brl_event_handler(struct goodix_ts_core *cd,
 	u8 event_status;
 	int ret = 0;
 
-	/* Defensive fix:
-	 * On some firmware/DT combinations we have seen ic_info.misc.touch_data_addr
-	 * becoming 0 at runtime, which causes all subsequent reads to return a
-	 * zeroed event header and every IRQ to be reported as
-	 * "Unsupported event status". Try to refresh ic_info once here instead
-	 * of operating with an invalid address.
-	 */
-	if (!misc->touch_data_addr) {
-		ts_err("touch_data_addr is 0, try to refresh ic info");
-		if (!hw_ops || !hw_ops->get_ic_info) {
-			ts_err("hw_ops/get_ic_info is NULL");
-			return -EINVAL;
-		}
-
-		ret = hw_ops->get_ic_info(cd, &cd->ic_info);
-		if (ret) {
-			ts_err("failed to refresh ic info, ret=%d", ret);
-			return ret;
-		}
-
-		misc = &cd->ic_info.misc;
-		if (!misc->touch_data_addr) {
-			ts_err("touch_data_addr still 0 after ic info refresh");
-			return -EINVAL;
-		}
-
-		ts_info("ic info refreshed: touch_data_addr=0x%04X, head_len=%d",
-			misc->touch_data_addr, misc->touch_data_head_len);
-	}
-
 	pre_read_len = IRQ_EVENT_HEAD_LEN +
 		BYTES_PER_POINT * 2 + COOR_DATA_CHECKSUM_SIZE;
 #ifdef CONFIG_GTP_GHOST_LOG_CAPTURE
@@ -1499,6 +1486,10 @@ static int brl_event_handler(struct goodix_ts_core *cd,
 
 	event_status = pre_buf[0];
 	if (event_status & GOODIX_TOUCH_EVENT) {
+#ifdef CONFIG_GTP_HARDWARE_STATUS
+		cd->open_status= !!(event_status & GOODIX_OPEN_EVENT);
+		ts_debug("Touch open state = 0x%02x", cd->open_status);
+#endif
 		return goodix_touch_handler(cd, ts_event,
 					    pre_buf, pre_read_len);
 
@@ -1539,6 +1530,7 @@ static int brld_get_framedata(struct goodix_ts_core *cd,
 	int ret;
 	unsigned char val;
 	int retry = 20;
+	struct frame_head *frame_head;
 	unsigned char frame_buf[GOODIX_MAX_FRAMEDATA_LEN];
 	unsigned char *cur_ptr;
 	unsigned int flag_addr = cd->ic_info.misc.frame_data_addr;
@@ -1571,6 +1563,12 @@ static int brld_get_framedata(struct goodix_ts_core *cd,
 	if (checksum_cmp(frame_buf, cd->ic_info.misc.frame_data_head_len, CHECKSUM_MODE_U8_LE)) {
 		ts_err("frame head checksum error");
 		return -EINVAL;
+	}
+
+	frame_head = (struct frame_head *)frame_buf;
+	if (checksum_cmp(frame_buf, frame_head->cur_frame_len, CHECKSUM_MODE_U16_LE)) {
+		ts_err("frame body checksum error");
+		//return -EINVAL;
 	}
 
 	cur_ptr = frame_buf;

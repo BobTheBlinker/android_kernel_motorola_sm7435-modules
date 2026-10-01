@@ -1,6 +1,7 @@
+KERNEL_VERSION_NAME = $(shell basename $(KERNEL_DIR_PATH))
 EXTRA_CFLAGS += -Wall
-EXTRA_CFLAGS += -I$(KERNEL_SRC)/../sm7435-modules/motorola/include
-EXTRA_CFLAGS += -I$(KERNEL_SRC)/drivers/base
+EXTRA_CFLAGS += -I$(ANDROID_BUILD_TOP)/motorola/kernel/modules/include
+EXTRA_CFLAGS += -I$(ANDROID_BUILD_TOP)/$(KERNEL_VERSION_NAME)/drivers/base
 
 ifneq ($(filter m y,$(CONFIG_STK501xx_USB_CAL)),)
     EXTRA_CFLAGS += -DCONFIG_CAPSENSE_USB_CAL
@@ -14,7 +15,7 @@ ifneq ($(filter m y,$(CONFIG_STK501xx_FLIP_CAL)),)
     EXTRA_CFLAGS += -DCONFIG_CAPSENSE_FLIP_CAL
 endif
 
-ifneq (,$(findstring river, $(TARGET_PRODUCT)))
+ifneq (,$(filter river%,$(TARGET_PRODUCT)))
     EXTRA_CFLAGS += -DCONFIG_CAPSENSE_USB_CAL
 endif
 

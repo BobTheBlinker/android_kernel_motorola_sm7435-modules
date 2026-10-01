@@ -19,6 +19,7 @@
 #define MMI_BATT_SN_LEN 16
 
 struct battery_info {
+	bool present;
 	int batt_uv;
 	int batt_ua;
 	int batt_soc; /* 0 ~ 10000 indicating 0% to 100% */
@@ -44,6 +45,7 @@ struct battery_host {
 	int			first_usage_date;
 	int 			max_fcc_ua;
 	int 			demo_fv_mv;
+	int 			chrg_iterm_ma;
 //	char			batt_sn[MMI_BATT_SN_LEN];
 
 	u32 *thermal_primary_levels;

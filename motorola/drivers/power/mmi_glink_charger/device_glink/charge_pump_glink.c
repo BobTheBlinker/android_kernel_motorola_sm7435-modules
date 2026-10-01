@@ -161,6 +161,7 @@ static DEVICE_ATTR(charge_pump_ovpgate_en, S_IRUGO, charge_pump_ovpgate_en_show,
 static enum power_supply_property charge_pump_psy_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_TEMP,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_MAX,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
@@ -171,20 +172,40 @@ static int charge_pump_psy_get_prop(struct power_supply *psy,
 			 union power_supply_propval *pval)
 {
 	struct charge_pump_glink_dev *charge_pump_chip = power_supply_get_drvdata(psy);
-	struct charge_pump_dev_info charge_pump_info = { 0 };
-	int rc = -1;
+	struct timespec64 glink_access_time_now;
+	int rc = 0;
 
 	pval->intval = -ENODATA;
 
-	if (charge_pump_chip->dev_role == DEV_MASTER) {
-		rc = qti_charger_get_property(OEM_PROP_MASTER_SWITCHEDCAP_INFO,
-				&charge_pump_info, sizeof(charge_pump_info));
-	} else if (charge_pump_chip->dev_role == DEV_SLAVE) {
-		rc = qti_charger_get_property(OEM_PROP_SLAVE_SWITCHEDCAP_INFO,
-				&charge_pump_info, sizeof(charge_pump_info));
-	} else {
-		mmi_err(this_root_chip, "charge_pump_get_prop, Can not find correct charge_pump role %d", charge_pump_chip->dev_role);
+	switch (charge_pump_chip->dev_role) {
+	case DEV_MASTER:
+		ktime_get_real_ts64(&glink_access_time_now);
+		charge_pump_chip->elapsed_ms = (glink_access_time_now.tv_sec - charge_pump_chip->glink_access_time.tv_sec) * 1000;
+		charge_pump_chip->elapsed_ms += (glink_access_time_now.tv_nsec - charge_pump_chip->glink_access_time.tv_nsec) / 1000000;
+		if (charge_pump_chip->elapsed_ms > 1000) {
+			ktime_get_real_ts64(&charge_pump_chip->glink_access_time);
+			charge_pump_chip->elapsed_ms = 0;
+			rc = qti_charger_get_property(OEM_PROP_MASTER_SWITCHEDCAP_INFO,
+				&charge_pump_chip->charge_pump_dev_info, sizeof(struct charge_pump_dev_info));
+			mmi_dbg(this_root_chip, "charge_pump_get_prop[%d], DEV_INFO", charge_pump_chip->dev_role);
+		}
+		break;
+	case DEV_SLAVE:
+		ktime_get_real_ts64(&glink_access_time_now);
+		charge_pump_chip->elapsed_ms = (glink_access_time_now.tv_sec - charge_pump_chip->glink_access_time.tv_sec) * 1000;
+		charge_pump_chip->elapsed_ms += (glink_access_time_now.tv_nsec - charge_pump_chip->glink_access_time.tv_nsec) / 1000000;
+		if (charge_pump_chip->elapsed_ms > 1000) {
+			ktime_get_real_ts64(&charge_pump_chip->glink_access_time);
+			charge_pump_chip->elapsed_ms = 0;
+			rc = qti_charger_get_property(OEM_PROP_SLAVE_SWITCHEDCAP_INFO,
+				&charge_pump_chip->charge_pump_dev_info, sizeof(struct charge_pump_dev_info));
+			mmi_dbg(this_root_chip, "charge_pump_get_prop[%d], DEV_INFO", charge_pump_chip->dev_role);
+		}
+		break;
+	default:
+		mmi_err(this_root_chip, "charge_pump_get_prop, Can not find correct charger_pump role %d", charge_pump_chip->dev_role);
 		return rc;
+		break;
 	}
 
 	if (rc) {
@@ -194,22 +215,22 @@ static int charge_pump_psy_get_prop(struct power_supply *psy,
 
 	switch (prop) {
 	case  POWER_SUPPLY_PROP_STATUS:
-		pval->intval = charge_pump_info.chg_en;
+		pval->intval = charge_pump_chip->charge_pump_dev_info.chg_en;
 		break;
 	case POWER_SUPPLY_PROP_ONLINE:
-		pval->intval = charge_pump_info.otg_en;
+		pval->intval = charge_pump_chip->charge_pump_dev_info.otg_en;
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
-		pval->intval = charge_pump_info.vbus_mv;
+		pval->intval = charge_pump_chip->charge_pump_dev_info.vbus_mv;
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		pval->intval = charge_pump_info.vout_mv;
+		pval->intval = charge_pump_chip->charge_pump_dev_info.vout_mv;
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
-		pval->intval = charge_pump_info.ibat_ma;
+		pval->intval = charge_pump_chip->charge_pump_dev_info.ibus_ma;
 		break;
 	case POWER_SUPPLY_PROP_TEMP:
-		pval->intval = charge_pump_info.die_temp;
+		pval->intval = charge_pump_chip->charge_pump_dev_info.die_temp;
 		break;
 	default:
 		break;
@@ -253,12 +274,12 @@ static int charge_pump_notify_handler(struct notifier_block *nb, unsigned long e
 			mmi_err(this_root_chip, "charge_pump_get_prop, Can not find correct charge_pump role %d", charge_pump_chip->dev_role);
 			return rc;
 		}
-		mmi_info(this_root_chip, "charge_pump_dev[0x%02x]-[%d]: chg_en %d, work_mode %d, ovpgate %d, manual_mode %d, otg_en %d,"
+		mmi_info(this_root_chip, "charge_pump_dev[0x%04x]-[%d]: chg_en %d, work_mode %d, ovpgate %d, manual_mode %d, otg_en %d,"
 									"int_stat %d, ibus_ma %d, ibat_ma %d",
 							charge_pump_info.chip_id, charge_pump_chip->dev_role, charge_pump_info.chg_en, charge_pump_info.work_mode,
 							charge_pump_info.ovpgate, charge_pump_info.manual, charge_pump_info.otg_en, charge_pump_info.int_stat,
 							charge_pump_info.ibus_ma, charge_pump_info.ibat_ma);
-		mmi_info(this_root_chip, "charge_pump_dev[0x%02x]-[%d]: vbus_mv %d, vout_mv %d, vac_mv %d, vbat_mv %d, vusb_mv %d, vwpc_mv %d, die_temp %d",
+		mmi_info(this_root_chip, "charge_pump_dev[0x%04x]-[%d]: vbus_mv %d, vout_mv %d, vac_mv %d, vbat_mv %d, vusb_mv %d, vwpc_mv %d, die_temp %d",
 							charge_pump_info.chip_id, charge_pump_chip->dev_role,charge_pump_info.vbus_mv, charge_pump_info.vout_mv, charge_pump_info.vac_mv,
 							charge_pump_info.vbat_mv, charge_pump_info.vusb_mv, charge_pump_info.vwpc_mv, charge_pump_info.die_temp);
 	}

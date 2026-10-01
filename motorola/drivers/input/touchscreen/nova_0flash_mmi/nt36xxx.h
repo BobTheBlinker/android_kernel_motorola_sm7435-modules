@@ -29,7 +29,7 @@
 #include <linux/ktime.h>
 #endif
 
-#if defined(NVT_SENSOR_EN) && !defined(CONFIG_BOARD_USES_DOUBLE_TAP_CTRL)
+#ifdef NVT_SENSOR_EN
 #include <linux/sensors.h>
 #endif
 
@@ -162,7 +162,13 @@ extern const uint16_t gesture_key_array[];
 extern struct delayed_work nvt_esd_check_work;
 #endif
 
-#if defined(NVT_SENSOR_EN) && !defined(CONFIG_BOARD_USES_DOUBLE_TAP_CTRL)
+#ifdef NVT_SENSOR_EN
+/* display state */
+enum display_state {
+	SCREEN_UNKNOWN,
+	SCREEN_OFF,
+	SCREEN_ON,
+};
 struct nvt_sensor_platform_data {
 	struct input_dev *input_sensor_dev;
 	struct sensors_classdev ps_cdev;
@@ -188,7 +194,7 @@ struct usb_charger_detection {
 struct nvt_ts_data {
 	struct spi_device *client;
 	struct input_dev *input_dev;
-	struct work_struct nvt_fwu_work;
+	struct delayed_work nvt_fwu_work;
 	uint16_t addr;
 	int8_t phys[32];
 	uint8_t bTouchIsAwake;
@@ -218,6 +224,7 @@ struct nvt_ts_data {
 	bool gesture_wait_pm;
 	const char *panel_supplier;
 #ifdef CONFIG_BOARD_USES_DOUBLE_TAP_CTRL
+        int supported_gesture_type;
         bool d_tap_flag;
         bool s_tap_flag;
 #endif
@@ -244,9 +251,9 @@ struct nvt_ts_data {
 #endif
 #ifdef NVT_SENSOR_EN
 	bool should_enable_gesture;
-#ifndef CONFIG_BOARD_USES_DOUBLE_TAP_CTRL
+	enum display_state screen_state;
+	struct mutex state_mutex;
 	struct nvt_sensor_platform_data *sensor_pdata;
-#endif
 #endif
 #ifdef PALM_GESTURE
 	bool palm_enabled;

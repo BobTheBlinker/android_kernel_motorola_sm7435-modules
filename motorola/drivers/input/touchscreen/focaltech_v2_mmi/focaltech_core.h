@@ -72,6 +72,9 @@
 #ifdef PICOLEAF_DATA_EN
 #include "../pt/cypsoc_picoleaf.h"
 #endif
+#ifdef NDT_DATA_EN
+#include "../AW8680X/aw8680x.h"
+#endif
 
 /*****************************************************************************
 * Private constant and macro definitions using #define
@@ -86,6 +89,16 @@
 #define FTS_GESTURE_DATA_LEN               (FTS_GESTURE_POINTS_MAX * 4 + 4)
 
 #define FTS_MAX_ID                          0x0A
+#ifdef CONFIG_ENABLE_RESOLITION_BOOST
+#define FTS_TOUCH_OFF_E_XH                  3
+#define FTS_TOUCH_OFF_XL                    4
+#define FTS_TOUCH_OFF_ID_YH                 5
+#define FTS_TOUCH_OFF_YL                    6
+#define FTS_TOUCH_OFF_PRE                   7
+#define FTS_TOUCH_OFF_AREA                  8
+#define FTS_TOUCH_HIRES_X                   4
+#define FTS_HI_RES_X_MAX                    16
+#endif
 #define FTS_TOUCH_X_H_POS                   3
 #define FTS_TOUCH_X_L_POS                   4
 #define FTS_TOUCH_Y_H_POS                   5
@@ -261,6 +274,10 @@ struct fts_ts_data {
 #if defined(CONFIG_INPUT_TOUCHSCREEN_MMI)
     struct ts_mmi_class_methods *imports;
 #endif
+
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+    bool palm_on;
+#endif
 };
 
 enum _FTS_BUS_TYPE {
@@ -342,5 +359,6 @@ int fts_ex_mode_recovery(struct fts_ts_data *ts_data);
 
 void fts_irq_disable(void);
 void fts_irq_enable(void);
+void fts_cable_detect_func(bool force_renew);
 int fts_power_source_ctrl(struct fts_ts_data *ts_data, int enable);
 #endif /* __LINUX_FOCALTECH_CORE_H__ */

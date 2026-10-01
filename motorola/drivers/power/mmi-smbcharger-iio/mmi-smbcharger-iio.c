@@ -741,6 +741,7 @@ enum smb_mmi_ext_iio_channels {
 	SMB5_QG_CHARGE_FULL,
 	SMB5_QG_CHARGE_FULL_DESIGN,
 	SMB5_QG_BATT_FULL_CURRENT,
+	SMB5_QG_SOH,
 };
 
 static const char * const smb_mmi_ext_iio_chan_name[] = {
@@ -764,6 +765,7 @@ static const char * const smb_mmi_ext_iio_chan_name[] = {
 	[SMB5_QG_CHARGE_FULL] = "charge_full",
 	[SMB5_QG_CHARGE_FULL_DESIGN] = "charge_full_design",
 	[SMB5_QG_BATT_FULL_CURRENT] = "batt_full_current",
+	[SMB5_QG_SOH] = "soh",
 };
 
 bool is_chan_valid(struct smb_mmi_charger *chip,
@@ -3411,7 +3413,7 @@ static int mmi_get_ffc_fv(struct smb_mmi_charger *chip, int zone, bool force_ffc
 			}
 		}
 		ffc_max_fv = chip->noffc_max_fv;
-		mmi_dbg(chip,"NONEFFC temp zone %d, fv %d mV, chg iterm %d mA, qg iterm %d mA\n",
+		mmi_info(chip,"NONEFFC temp zone %d, fv %d mV, chg iterm %d mA, qg iterm %d mA\n",
 			zone, ffc_max_fv, prm->chrg_iterm, chip->noffc_qg_iterm);
 		return ffc_max_fv;
 	}
@@ -3423,7 +3425,7 @@ static int mmi_get_ffc_fv(struct smb_mmi_charger *chip, int zone, bool force_ffc
 
        prm->chrg_iterm = prm->ffc_zones[zone].ffc_chg_iterm;
        ffc_max_fv = prm->ffc_zones[zone].ffc_max_mv;
-       mmi_dbg(chip,
+       mmi_info(chip,
                "FFC temp zone %d, fv %d mV, chg iterm %d mA, qg iterm %d mA\n",
                  zone, ffc_max_fv, prm->chrg_iterm, prm->ffc_zones[zone].ffc_qg_iterm);
 
@@ -3626,7 +3628,7 @@ static void mmi_basic_charge_sm(struct smb_mmi_charger *chip,
 	bool is_chg_dis = get_effective_result(chip->chg_dis_votable);
 	static int demo_full_soc = 100;
 
-	mmi_dbg(chip, "batt_mv = %d, batt_ma %d, batt_soc %d,"
+	mmi_info(chip, "batt_mv = %d, batt_ma %d, batt_soc %d,"
 		" batt_temp %d, usb_mv %d, dc_mv %d, cp %d, vp %d dp %d\n",
 		stat->batt_mv,
 		stat->batt_ma,
@@ -3651,7 +3653,7 @@ static void mmi_basic_charge_sm(struct smb_mmi_charger *chip,
 	}
 
 	if (!chip->enable_dcp_ffc) {
-		mmi_dbg(chip,"real_charger_type=%d, pd_pps_active=%d\n",chip->real_charger_type,
+		mmi_info(chip,"real_charger_type=%d, pd_pps_active=%d\n",chip->real_charger_type,
 			chip->pd_pps_active);
 		if ((chip->real_charger_type != QTI_POWER_SUPPLY_TYPE_USB_HVDCP_3P5) &&
 			(chip->pd_pps_active != QTI_POWER_SUPPLY_PD_PPS_ACTIVE))
@@ -3861,11 +3863,11 @@ static void mmi_basic_charge_sm(struct smb_mmi_charger *chip,
 	} else
 		prm->batt_health = POWER_SUPPLY_HEALTH_GOOD;
 
-	mmi_dbg(chip, "Step State = %s, Temp Zone %d, Health %d\n",
+	mmi_info(chip, "Step State = %s, Temp Zone %d, Health %d\n",
 		stepchg_str[(int)prm->pres_chrg_step],
 		prm->pres_temp_zone,
 		prm->batt_health);
-	mmi_dbg(chip, "IMPOSED: FV = %d, CDIS = %d, FCC = %d, USBICL = %d\n",
+	mmi_info(chip, "IMPOSED: FV = %d, CDIS = %d, FCC = %d, USBICL = %d\n",
 		get_effective_result(chip->fv_votable),
 		get_effective_result(chip->chg_dis_votable),
 		get_effective_result(chip->fcc_votable),
@@ -4261,29 +4263,40 @@ static void mmi_heartbeat_work(struct work_struct *work)
 		}
 
 	} else if (!chip->factory_mode) {
-		cap_err = 0;
-		rc = smb_mmi_read_iio_chan(chip,
-					       SMB5_QG_CHARGE_FULL,
-					       &pval.intval);
+		//Get soh from qcom gauge,  or soh=age=fcc/fcc_designed
+		rc = smb_mmi_read_iio_chan(chip, SMB5_QG_SOH, &pval.intval);
 		if (rc < 0) {
-			mmi_err(chip, "Couldn't get charge full\n");
-			cap_err = rc;
-		} else
-			main_cap = pval.intval;
+			mmi_err(chip, "Couldn't get qcom battery soh\n");
+			//chip->age = 100;
+			cap_err = 0;
+			rc = smb_mmi_read_iio_chan(chip,
+						       SMB5_QG_CHARGE_FULL,
+						       &pval.intval);
+			if (rc < 0) {
+				mmi_err(chip, "Couldn't get charge full\n");
+				cap_err = rc;
+			} else
+				main_cap = pval.intval;
 
-		rc = smb_mmi_read_iio_chan(chip,
-					SMB5_QG_CHARGE_FULL_DESIGN,
-					&pval.intval);
-		if (rc < 0) {
-			mmi_err(chip, "Couldn't get charge full design\n");
-			cap_err = rc;
-		} else
-			main_cap_full = pval.intval;
+			rc = smb_mmi_read_iio_chan(chip,
+						SMB5_QG_CHARGE_FULL_DESIGN,
+						&pval.intval);
+			if (rc < 0) {
+				mmi_err(chip, "Couldn't get charge full design\n");
+				cap_err = rc;
+			} else
+				main_cap_full = pval.intval;
 
-		if (cap_err == 0)
-			chip->age = ((main_cap / 10) / (main_cap_full / 1000));
+			if (cap_err == 0)
+				chip->age = ((main_cap / 10) / (main_cap_full / 1000));
 
-		mmi_dbg(chip, "Age %d\n", chip->age);
+			mmi_dbg(chip, "mmi_age %d\n", chip->age);
+		} else {
+			chip->age = pval.intval;
+			mmi_dbg(chip, "get qg soh=%d\n", chip->age);
+			if (chip->cycles < 50)
+				chip->age = 100;
+		}
 
 		/* Fall here for Basic Step and Thermal Charging */
 		mmi_basic_charge_sm(chip, &chg_stat);
@@ -4541,12 +4554,13 @@ static int batt_get_prop(struct power_supply *psy,
 			val->intval = chip->last_reported_soc;
 		break;
 	case POWER_SUPPLY_PROP_CYCLE_COUNT:
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,25)
-		rc = power_supply_get_property(chip->qcom_psy,
-						       psp, val);
-#else
-		val->intval = chip->cycles / 100;
-#endif
+		if (chip->max_main_psy && chip->max_flip_psy)
+			val->intval = chip->cycles / 100;
+		else {
+			rc = power_supply_get_property(chip->qcom_psy, psp, val);
+			if (rc >= 0)
+				chip->cycles = val->intval;
+		}
 		break;
 	case POWER_SUPPLY_PROP_HEALTH:
 		if (chip->max_main_psy && chip->max_flip_psy)
@@ -4615,7 +4629,13 @@ static int batt_set_prop(struct power_supply *psy,
 
 	switch (prop) {
 	case POWER_SUPPLY_PROP_CYCLE_COUNT:
-		chip->cycles += val->intval * 100;
+		if (chip->max_main_psy && chip->max_flip_psy) {
+			chip->cycles += val->intval * 100;
+		} else {
+			rc = power_supply_set_property(chip->qcom_psy, prop, val);
+			if (rc < 0)
+				mmi_err(chip, "set cycle_count failed, rc=%d\n", rc);
+		}
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
 		if (val->intval < 0) {

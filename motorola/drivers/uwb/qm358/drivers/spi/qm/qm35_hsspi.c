@@ -33,9 +33,6 @@
 #include "qm35_spi.h"
 #include "qm35_spi_trc.h"
 
-#define QM35_WAKEUP_DURATION_US 500
-#define QM35_WAKEUP_DELAY_US 5000
-
 /**
  * struct qm35_hsspi_message - SPI message with two transfers.
  * @msg: SPI message.
@@ -145,26 +142,39 @@ int qm35_hsspi_wakeup(struct qm35_spi *qmspi, bool force)
 		usleep_range(QM35_WAKEUP_DURATION_US,
 			     QM35_WAKEUP_DURATION_US + 100);
 		gpiod_set_value(qmspi->wakeup_gpio, 0);
+		if (!qmspi->async_wakeup) {
+			/* After wake-up the FW need little time to restore it's context. */
+			usleep_range(QM35_WAKEUP_DELAY_US,
+				     QM35_WAKEUP_DELAY_US * 3 / 2);
+		}
 	} else {
 		/* Wakeup using an SPI transaction */
 		struct qm35_hsspi_message xfer;
 		struct spi_transfer *tr = &xfer.tr[0];
-
+		unsigned delay_gpioless;
+		if (qmspi->async_wakeup) {
+			delay_gpioless = QM35_WAKEUP_DURATION_US;
+		} else {
+			/* Use a longer wake-up SPI transaction to ensure CS is low when QM FW
+			 * has started, which guaranteed QM stay alive for 10ms more. */
+			delay_gpioless = QM35_WAKEUP_DELAY_US * 3 / 2;
+		}
 		/* Setup a no-data transfer! */
 		qm35_hsspi_setup(&xfer, NULL, NULL, false);
-
 		/* Add a delay after transfer. See spi_transfer_delay_exec() called by
 		   spi_transfer_one_message(). */
 #if (KERNEL_VERSION(5, 13, 0) > LINUX_VERSION_CODE)
-		tr->delay_usecs = QM35_WAKEUP_DURATION_US;
+		tr->delay_usecs = delay_gpioless;
 #else
 		tr->delay.unit = SPI_DELAY_UNIT_USECS;
-		tr->delay.value = QM35_WAKEUP_DURATION_US;
+		tr->delay.value = delay_gpioless;
 #endif
 		rc = spi_sync(qmspi->spi, &xfer.msg);
 	}
-	/* After wake-up the FW need little time to restore it's context. */
-	usleep_range(QM35_WAKEUP_DELAY_US, QM35_WAKEUP_DELAY_US * 3 / 2);
+	if (!rc && qmspi->async_wakeup) {
+		qmspi->wakeup_event = false;
+		rc = -EINPROGRESS;
+	}
 	return rc;
 }
 
@@ -296,7 +306,6 @@ static int qm35_hsspi_prd(struct qm35_spi *qmspi,
  * @ul_value: HSSPI header ul_value field to set.
  * @data: Payload data.
  * @length: Payload data length.
- * @do_prd: Bool asserting if a pre read is needed.
  *
  * Send a message to the QM35 SPI device with the correct HSSPI header.
  * Use two SPI transaction to allow zero-copy mode of provided payload.
@@ -304,10 +313,11 @@ static int qm35_hsspi_prd(struct qm35_spi *qmspi,
  * Return: 0 on success, else a negative error code.
  */
 int qm35_hsspi_send(struct qm35_spi *qmspi, u8 ul_value, const void *data,
-		    size_t length, bool do_prd)
+		    size_t length)
 {
 	struct qm35_hsspi_header hdr;
 	struct qm35_hsspi_message xfer;
+	bool do_prd;
 	int ret = 0;
 
 	trace_qm35_hsspi_send(qmspi);
@@ -321,14 +331,15 @@ int qm35_hsspi_send(struct qm35_spi *qmspi, u8 ul_value, const void *data,
 	if (ret)
 		goto error;
 	/* Setup the HSSPI header */
-	hdr.flags = HSSPI_HOST_WR | (HSSPI_HOST_PRD * do_prd);
 	hdr.ul_value = ul_value;
 	hdr.length = length;
 	/* Setup message for WRITE */
 	qm35_hsspi_setup_tx(&xfer, &hdr, &hdr, data, length);
 	trace_qm35_hsspi_data(qmspi, data, (int)length);
+	/* Finalize the HSSPI header */
+	do_prd = atomic_read(&qmspi->should_read);
+	hdr.flags = HSSPI_HOST_WR | (HSSPI_HOST_PRD * do_prd);
 	trace_qm35_hsspi_host_header(qmspi, &hdr);
-
 	/* Now execute this spi message synchronously */
 	ret = spi_sync(qmspi->spi, &xfer.msg);
 	if (ret)

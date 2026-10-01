@@ -23,17 +23,23 @@
 #ifndef __QM35_SPI_H
 #define __QM35_SPI_H
 
-#include <linux/spi/spi.h>
 #include <linux/atomic.h>
+#include <linux/mutex.h>
+#include <linux/spi/spi.h>
+#include <linux/sysfs.h>
+#include <linux/wait.h>
 
 #include "qm35.h"
 #include "qm35_spi_setup.h"
 #include "qm35_spi_thread.h"
+#if IS_ENABLED(CONFIG_QM35_FLASHING)
 #include "qm35_spi_fw.h"
+#endif
 #include "qm35_uci_probe.h"
 
 #define QM35_RESET_DURATION_US 2000
 #define QM35_RESET_BACKOFF_DURATION_US 25000
+#define QM35_BOOTROM_RESET_BACKOFF_DURATION_US 120000
 
 /**
  * enum qm35_spi_debug_flags - QM35 SPI debug_flags bit-field definition.
@@ -94,6 +100,9 @@ struct qm35_spi_work_params {
  * @work_recv: Work structure for the recv.
  * @send_params: Parameters used by the send work.
  * @probing_data: Probing related data.
+ * @wakeup_wait: Wait queue used to wait wakeup packet from FW.
+ * @wakeup_event: Indicate if wakeup packet from FW was received.
+ * @async_wakeup: Indicate if FW support sending wakeup packet.
  * @suspend_reset: Force chip reset at end of PM suspend.
  * @started: The boolean that notifies if the chip is started or not.
  * @prd_done: Bool showing state of the pre read call.
@@ -112,17 +121,30 @@ struct qm35_spi {
 	struct gpio_desc *wakeup_gpio;
 	struct gpio_desc *exton_gpio;
 	struct qm35_worker worker;
+#if IS_ENABLED(CONFIG_QM35_FLASHING)
 	struct qm35_firmware fw;
+#endif
 	struct qm35_work work_recv;
 	struct qm35_work work_send;
 	struct qm35_spi_work_params send_params;
 	struct qm35_uci_probing probing_data;
+	wait_queue_head_t wakeup_wait;
+	bool async_wakeup, wakeup_event;
 	bool suspend_reset;
 	bool started;
 	atomic_t prd_done;
 	atomic_t should_read;
 	atomic_t should_write;
 	int prd_length;
+	struct bin_attribute info_bin_attr;
+	struct {
+		struct qm35_uci_device_info udi;
+		char vendor_data[128 - sizeof(struct qm35_uci_device_info)];
+	} infobuf;
+	size_t len_infobuf;
+	struct mutex info_mutex;
+	struct clk *clk;
+	bool clk_enabled;
 };
 
 static inline struct qm35_spi *qm35_to_qm35_spi(const struct qm35 *qm35)

@@ -338,154 +338,55 @@ static ssize_t gesture_show(struct device *dev,
 
 	return scnprintf(buf, PAGE_SIZE, "%02x\n", touch_cdev->pdata.supported_gesture_type);
 }
-
-static bool _gesture_set(struct ts_mmi_dev *touch_cdev,
-			 unsigned long bit, bool val)
-{
-	bool current_val = touch_cdev->gesture_mode_type & bit;
-
-	if (current_val == val)
-		return false;
-
-	if (val)
-		touch_cdev->gesture_mode_type |= bit;
-	else
-		touch_cdev->gesture_mode_type &= ~bit;
-
-	return val;
-}
-
-static void gesture_sync(struct ts_mmi_dev *touch_cdev)
-{
-	kfifo_put(&touch_cdev->cmd_pipe, TS_MMI_SET_GESTURES);
-	schedule_delayed_work(&touch_cdev->work, 0);
-}
-
-static void gesture_set(struct ts_mmi_dev *touch_cdev,
-			unsigned long bit, bool enable)
-{
-	bool sync;
-
-	mutex_lock(&touch_cdev->extif_mutex);
-	sync = _gesture_set(touch_cdev, bit, enable);
-	mutex_unlock(&touch_cdev->extif_mutex);
-
-	if (sync && !touch_cdev->udfps_pressed && !touch_cdev->double_tap_pressed)
-		gesture_sync(touch_cdev);
-}
-
 static ssize_t gesture_store(struct device *dev,
 			struct device_attribute *attr, const char *buf, size_t size)
 {
 	struct ts_mmi_dev *touch_cdev = dev_get_drvdata(dev);
 	unsigned int value = 0;
-	unsigned long bit;
 	int err = 0;
 
+	mutex_lock(&touch_cdev->extif_mutex);
 	err = sscanf(buf, "%d", &value);
 	if (err < 0) {
 		dev_err(dev, "forcereflash: Failed to convert value\n");
 		mutex_unlock(&touch_cdev->extif_mutex);
 		return -EINVAL;
 	}
-	switch (value >> 4) {
-		case 0x1:
-			bit = TS_MMI_GESTURE_ZERO;
+	switch (value) {
+		case 0x10:
+			dev_info(dev, "%s: zero tap disable\n", __func__);
+			touch_cdev->gesture_mode_type &= 0xFE;
 			break;
-		case 0x2:
-			bit = TS_MMI_GESTURE_SINGLE;
+		case 0x11:
+			dev_info(dev, "%s: zero tap enable\n", __func__);
+			touch_cdev->gesture_mode_type |= 0x01;
 			break;
-		case 0x3:
-			bit = TS_MMI_GESTURE_DOUBLE;
+		case 0x20:
+			dev_info(dev, "%s: single tap disable\n", __func__);
+			touch_cdev->gesture_mode_type &= 0xFD;
+			break;
+		case 0x21:
+			dev_info(dev, "%s: single tap enable\n", __func__);
+			touch_cdev->gesture_mode_type |= 0x02;
+			break;
+		case 0x30:
+			dev_info(dev, "%s: double tap disable\n", __func__);
+			touch_cdev->gesture_mode_type &= 0xFB;
+			break;
+		case 0x31:
+			dev_info(dev, "%s: double tap enable\n", __func__);
+			touch_cdev->gesture_mode_type |= 0x04;
 			break;
 		default:
-			return size;
+			dev_info(dev, "%s: unsupport gesture mode type\n", __func__);
+			;
 	}
-
-	gesture_set(touch_cdev, bit, value & 0x1);
+	mutex_unlock(&touch_cdev->extif_mutex);
+	dev_info(dev, "%s: gesture_mode_type = 0x%02x \n", __func__, touch_cdev->gesture_mode_type);
 
 	return size;
 }
 static DEVICE_ATTR(gesture, (S_IWUSR | S_IWGRP | S_IRUGO), gesture_show, gesture_store);
-
-static ssize_t single_tap_enabled_show(struct device *dev,
-				       struct device_attribute *attr, char *buf)
-{
-	struct ts_mmi_dev *touch_cdev = dev_get_drvdata(dev);
-
-	return snprintf(buf, PAGE_SIZE, "%u\n",
-			!!(touch_cdev->gesture_mode_type & TS_MMI_GESTURE_SINGLE));
-}
-static ssize_t single_tap_enabled_store(struct device *dev,
-					struct device_attribute *attr,
-					const char *buf, size_t count)
-{
-	struct ts_mmi_dev *touch_cdev = dev_get_drvdata(dev);
-
-	gesture_set(touch_cdev, TS_MMI_GESTURE_SINGLE, buf[0] != '0');
-
-	return count;
-}
-static DEVICE_ATTR_RW(single_tap_enabled);
-
-static ssize_t double_tap_enabled_show(struct device *dev,
-				       struct device_attribute *attr, char *buf)
-{
-	struct ts_mmi_dev *touch_cdev = dev_get_drvdata(dev);
-
-	return snprintf(buf, PAGE_SIZE, "%u\n",
-			!!(touch_cdev->gesture_mode_type & TS_MMI_GESTURE_DOUBLE));
-}
-static ssize_t double_tap_enabled_store(struct device *dev,
-					struct device_attribute *attr,
-					const char *buf, size_t count)
-{
-	struct ts_mmi_dev *touch_cdev = dev_get_drvdata(dev);
-
-	gesture_set(touch_cdev, TS_MMI_GESTURE_DOUBLE, buf[0] != '0');
-
-	return count;
-}
-static DEVICE_ATTR_RW(double_tap_enabled);
-
-static ssize_t double_tap_pressed_show(struct device *dev,
-					 struct device_attribute *attr,
-					 char *buf)
-{
-	struct ts_mmi_dev *touch_cdev = dev_get_drvdata(dev);
-
-	return snprintf(buf, PAGE_SIZE, "%u\n", touch_cdev->double_tap_pressed);
-}
-static DEVICE_ATTR_RO(double_tap_pressed);
-
-static ssize_t udfps_enabled_show(struct device *dev,
-				  struct device_attribute *attr, char *buf)
-{
-	struct ts_mmi_dev *touch_cdev = dev_get_drvdata(dev);
-
-	return snprintf(buf, PAGE_SIZE, "%u\n",
-			!!(touch_cdev->gesture_mode_type & TS_MMI_GESTURE_ZERO));
-}
-static ssize_t udfps_enabled_store(struct device *dev,
-				   struct device_attribute *attr,
-				   const char *buf, size_t count)
-{
-	struct ts_mmi_dev *touch_cdev = dev_get_drvdata(dev);
-
-	gesture_set(touch_cdev, TS_MMI_GESTURE_ZERO, buf[0] != '0');
-
-	return count;
-}
-static DEVICE_ATTR_RW(udfps_enabled);
-
-static ssize_t udfps_pressed_show(struct device *dev,
-				  struct device_attribute *attr, char *buf)
-{
-	struct ts_mmi_dev *touch_cdev = dev_get_drvdata(dev);
-
-	return snprintf(buf, PAGE_SIZE, "%u\n", touch_cdev->udfps_pressed);
-}
-static DEVICE_ATTR_RO(udfps_pressed);
 #endif
 
 /*
@@ -571,28 +472,13 @@ static struct attribute *sysfs_class_attrs[] = {
 #endif
 #ifdef CONFIG_BOARD_USES_DOUBLE_TAP_CTRL
 	&dev_attr_gesture.attr,
-	&dev_attr_single_tap_enabled.attr,
-	&dev_attr_double_tap_enabled.attr,
-	&dev_attr_double_tap_pressed.attr,
 #endif
 	&dev_attr_liquid_detection_ctl.attr,
 	NULL,
 };
 
-static struct attribute *udfps_sysfs_class_attrs[] = {
-#ifdef CONFIG_BOARD_USES_DOUBLE_TAP_CTRL
-	&dev_attr_udfps_enabled.attr,
-	&dev_attr_udfps_pressed.attr,
-#endif
-	NULL,
-};
-
 static const struct attribute_group sysfs_class_group = {
         .attrs = sysfs_class_attrs,
-};
-
-static const struct attribute_group udfps_sysfs_class_group = {
-        .attrs = udfps_sysfs_class_attrs,
 };
 
 /*
@@ -1039,12 +925,6 @@ int ts_mmi_dev_register(struct device *parent,
 	if (ret)
 		goto CLASS_DEVICE_ATTR_CREATE_FAILED;
 
-	if (touch_cdev->pdata.supported_gesture_type & TS_MMI_GESTURE_ZERO) {
-		ret = sysfs_create_group(&DEV_MMI->kobj, &udfps_sysfs_class_group);
-		if (ret)
-			goto CLASS_DEVICE_UDFPS_ATTR_CREATE_FAILED;
-	}
-
 	if (touch_cdev->mdata->extend_attribute_group) {
 		touch_cdev->mdata->extend_attribute_group(DEV_TS,
 			&touch_cdev->extern_group);
@@ -1123,9 +1003,6 @@ CLASS_DEVICE_EDGE_ATTR_CREATE_FAILED:
 	if (touch_cdev->extern_group)
 		sysfs_remove_group(&DEV_MMI->kobj, touch_cdev->extern_group);
 CLASS_DEVICE_EXT_ATTR_CREATE_FAILED:
-	if (touch_cdev->pdata.supported_gesture_type & TS_MMI_GESTURE_ZERO)
-		sysfs_remove_group(&DEV_MMI->kobj, &udfps_sysfs_class_group);
-CLASS_DEVICE_UDFPS_ATTR_CREATE_FAILED:
 	sysfs_remove_group(&DEV_MMI->kobj, &sysfs_class_group);
 CLASS_DEVICE_ATTR_CREATE_FAILED:
 	down_write(&touchscreens_list_lock);
@@ -1182,8 +1059,6 @@ void ts_mmi_dev_unregister(struct device *parent)
 	ts_mmi_sysfs_create_edge_entries(touch_cdev, false);
 	if (touch_cdev->extern_group)
 		sysfs_remove_group(&DEV_MMI->kobj, touch_cdev->extern_group);
-	if (touch_cdev->pdata.supported_gesture_type & TS_MMI_GESTURE_ZERO)
-		sysfs_remove_group(&DEV_MMI->kobj, &udfps_sysfs_class_group);
 	sysfs_remove_group(&DEV_MMI->kobj, &sysfs_class_group);
 	device_unregister(DEV_MMI);
 	DEV_MMI = NULL;

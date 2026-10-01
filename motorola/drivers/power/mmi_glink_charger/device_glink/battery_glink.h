@@ -29,11 +29,15 @@ struct battery_glink_dev {
 	struct glink_device *glink_dev;
 	struct power_supply	*batt_dev_psy;
 	struct battery_info 	batt_dev_info;
+	struct battery_info 	batt_prop_info;
 	int			state_of_health;
 	int			manufacturing_date;
 	int			first_usage_date;
 	char batt_sn[MMI_BATT_SN_LEN];
 	struct notifier_block	batt_nb;
+
+	struct timespec64 glink_access_time;
+	uint32_t elapsed_ms;
 };
 
 struct glink_device *battery_glink_device_register(struct mmi_glink_chip *chip, struct mmi_glink_dev_dts_info *dev_dts);

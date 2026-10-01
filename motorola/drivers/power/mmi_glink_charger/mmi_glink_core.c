@@ -39,6 +39,7 @@
 #include "wireless_charge_glink.h"
 #include "switch_buck_glink.h"
 #include "charge_pump_glink.h"
+#include "usb_glink.h"
 #include "trusted_shash_lib.h"
 #define HYST_STEP_MV 50
 #define DEMO_MODE_HYS_SOC 5
@@ -78,7 +79,6 @@ enum {
 
 enum {
 	NOTIFY_EVENT_TYPE_CHG_RATE = 0,
-	NOTIFY_EVENT_TYPE_LPD_PRESENT,
 	NOTIFY_EVENT_TYPE_VBUS_PRESENT,
 	NOTIFY_EVENT_TYPE_POWER_WATT,
 	NOTIFY_EVENT_TYPE_POWER_WATT_DESIGN,
@@ -185,8 +185,6 @@ static ssize_t state_sync_store(struct device *dev,
 		mutex_lock(&this_chip->charger_lock);
 		mmi_notify_charger_event(this_chip,
 					NOTIFY_EVENT_TYPE_CHG_RATE);
-		mmi_notify_charger_event(this_chip,
-					NOTIFY_EVENT_TYPE_LPD_PRESENT);
 		mmi_notify_charger_event(this_chip,
 					NOTIFY_EVENT_TYPE_VBUS_PRESENT);
 		mmi_notify_charger_event(this_chip,
@@ -467,11 +465,6 @@ static void mmi_notify_charger_event(struct mmi_glink_chip *chip, int type)
 				"POWER_SUPPLY_CHARGE_RATE=%s",
 				charge_rate[chip->max_charger_rate]);
 			break;
-		case NOTIFY_EVENT_TYPE_LPD_PRESENT:
-			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
-				"POWER_SUPPLY_LPD_PRESENT=%s",
-				chip->lpd_present? "true" : "false");
-			break;
 		case NOTIFY_EVENT_TYPE_VBUS_PRESENT:
 			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
 				"POWER_SUPPLY_VBUS_PRESENT=%s",
@@ -542,15 +535,18 @@ int mmi_get_battery_charger_rate(struct mmi_glink_chip *charger)
 static void mmi_update_charger_event(struct mmi_glink_chip *chip)
 {
 	bool mmi_changed = false;
+	struct battery_host *batt_host = chip->batt_host;
 	int charger_rate = MMI_POWER_SUPPLY_CHARGE_RATE_NONE;
 	static int max_charger_rate = MMI_POWER_SUPPLY_CHARGE_RATE_NONE;
 	//int charger_type = 0;
 	int real_charger_type = 0;
 	bool vbus_present = false;
-	bool lpd_present = false;
 	int power_watt = 0;
 
 	charger_rate = mmi_get_battery_charger_rate(chip);
+	power_watt = chip->charger_info.chrg_pmax_mw;
+	real_charger_type =  chip->charger_info.chrg_type;
+	vbus_present = chip->charger_info.usb_online;
 
 	if (max_charger_rate < charger_rate || charger_rate == MMI_POWER_SUPPLY_CHARGE_RATE_NONE)
 		max_charger_rate = charger_rate;
@@ -561,14 +557,6 @@ static void mmi_update_charger_event(struct mmi_glink_chip *chip)
 		mmi_notify_charger_event(chip, NOTIFY_EVENT_TYPE_CHG_RATE);
 		mmi_err(chip, "%s charger is detected\n",
 			charge_rate[chip->max_charger_rate]);
-	}
-
-	if (chip->lpd_present != lpd_present) {
-		mmi_changed = true;
-		chip->lpd_present = lpd_present;
-		mmi_notify_charger_event(chip, NOTIFY_EVENT_TYPE_LPD_PRESENT);
-		mmi_info(chip, "lpd is %s\n",
-			lpd_present? "present" : "absent");
 	}
 
 	if (chip->vbus_present != vbus_present) {
@@ -592,10 +580,13 @@ static void mmi_update_charger_event(struct mmi_glink_chip *chip)
 		chip->real_charger_type = real_charger_type;
 		mmi_notify_charger_event(chip, NOTIFY_EVENT_TYPE_CHG_REAL_TYPE);
 		mmi_info(chip, "charger real type is %d\n", real_charger_type);
+		sysfs_notify(&batt_host->batt_psy->dev.kobj, NULL, "charge_real_type");
 	}
 
-	mmi_info(chip, "mmi_changed %d, charger_rate %d\n", mmi_changed, charger_rate);
-
+	if (mmi_changed) {
+		mmi_info(chip, "charger_rate %s, vbus %d, power_watt %d, charger real type %d\n",
+			charge_rate[chip->max_charger_rate], chip->vbus_present, chip->power_watt, chip->real_charger_type);
+	}
 }
 
 #define VBUS_MIN_MV			4000
@@ -604,6 +595,7 @@ static void mmi_update_battery_status(struct mmi_glink_chip *chip)
 	struct battery_host *batt_host = chip->batt_host;
 	struct battery_info *batt_info = &chip->battery_info;
 	struct battery_info qti_batt_info;
+	struct mmi_charger_status *chrg_status = &chip->charger_status;
 	union power_supply_propval prop;
 	int ret = 0;
 	if (!batt_host->batt_psy) {
@@ -611,12 +603,30 @@ static void mmi_update_battery_status(struct mmi_glink_chip *chip)
 		return;
 	}
 
-	qti_charger_get_property(OEM_PROP_BATT_INFO,
+	memcpy(&qti_batt_info, batt_info, sizeof(struct battery_info));
+	qti_batt_info.present = true;
+	ret = qti_charger_get_property(OEM_PROP_BATT_INFO,
 				&qti_batt_info,
 				sizeof(struct battery_info));
 
-	batt_info->batt_soh = qti_batt_info.batt_soh;
-	batt_host->state_of_health = qti_batt_info.batt_soh;
+	if (!ret) {
+		batt_info->batt_soh = qti_batt_info.batt_soh;
+		batt_host->state_of_health = qti_batt_info.batt_soh;
+		if (chip->state_of_health != qti_batt_info.batt_soh) {
+			chip->state_of_health = qti_batt_info.batt_soh;
+			mmi_notify_charger_event(chip, NOTIFY_EVENT_TYPE_BATTERY_SOH);
+			mmi_info(chip, "state_of_health %d\n", chip->state_of_health);
+		}
+
+		if (!qti_batt_info.present) {
+			mmi_info(chip, "BATT_INFO, batt_present check failure, Do not allow to charge\n");
+			chip->force_chrg_disabled_batt_err = true;
+		} else {
+			chip->force_chrg_disabled_batt_err = false;
+		}
+	} else {
+		mmi_info(chip, "BATT_INFO, get qti_batt_info failed\n");
+	}
 
 	ret = power_supply_get_property(batt_host->batt_psy,
 		POWER_SUPPLY_PROP_STATUS, &prop);
@@ -663,11 +673,24 @@ static void mmi_update_battery_status(struct mmi_glink_chip *chip)
 	if (!ret)
 		batt_info->batt_cycle = prop.intval;
 
+	if (batt_info->batt_soh > 0) {
+		batt_host->age = batt_info->batt_soh;
+	} else if (batt_info->batt_full_uah > 0 && batt_info->batt_design_uah > 0) {
+		batt_host->age = batt_info->batt_full_uah * 100 / batt_info->batt_design_uah;
+	} else if (batt_host->age == 0) {
+		batt_host->age = -1;
+	}
+
+	if (chip->max_chrg_temp > 0 && batt_info->batt_temp >= (chip->max_chrg_temp * 10))
+		chrg_status->pres_temp_zone = ZONE_HOT;
+	else
+		chrg_status->pres_temp_zone = ZONE_FIRST;
+
 	mmi_info(chip, "batt_mv %d, batt_ma %d, batt_soc %d, batt_temp %d, batt_status %d, batt_soh %d "
-		"batt_full_mah %d, batt_design_mah %d, batt_chg_counter %d, batt_cycle %d, init_cycles %d, batt_num %d",
+		"batt_full_mah %d, batt_design_mah %d, batt_chg_counter %d, batt_cycle %d, init_cycles %d, batt_num %d, max_chrg_temp %d",
 		batt_info->batt_uv / 1000, batt_info->batt_ua / 1000, batt_info->batt_soc, batt_info->batt_temp, batt_info->batt_status, batt_info->batt_soh,
 		batt_info->batt_full_uah / 1000, batt_info->batt_design_uah / 1000, batt_info->batt_chg_counter,
-		batt_info->batt_cycle, batt_host->init_cycles, batt_host->batt_dev_num);
+		batt_info->batt_cycle, batt_host->init_cycles, batt_host->batt_dev_num, chip->max_chrg_temp);
 
 	return;
 }
@@ -677,19 +700,16 @@ static void mmi_get_charger_info(struct mmi_glink_chip *chip)
 	int rc;
 	struct mmi_charger_info *charger_info = NULL;
 	struct mmi_charger_info charger_info_update;
-	struct mmi_lpd_info *lpd_info = NULL;
+	struct mmi_pmic_info *pmic_info = NULL;
+	struct mmi_pmic_info pmic_info_update;
 	struct battery_host *batt_host;
 	int thermal_level = 0;
-	int prev_cid = -1;
-	int prev_lpd = 0;
-	static bool lpd_ulog_triggered = false;
-	static bool otg_ulog_triggered = false;
 
 	if (!chip)
 		return;
 
 	charger_info = &chip->charger_info;
-	lpd_info = &chip->lpd_info;
+	pmic_info = &chip->pmic_info;
 	batt_host = chip->batt_host;
 
 	mmi_get_cur_thermal_level(chip, &thermal_level);
@@ -700,8 +720,8 @@ static void mmi_get_charger_info(struct mmi_glink_chip *chip)
 	if (rc)
 		return;
 
-	charger_info->chrg_mv = charger_info_update.chrg_mv;
-	charger_info->chrg_ma = charger_info_update.chrg_mv;
+	charger_info->chrg_uv = charger_info_update.chrg_uv;
+	charger_info->chrg_ua = charger_info_update.chrg_ua;
 	charger_info->chrg_type = charger_info_update.chrg_type;
 	charger_info->chrg_pmax_mw = charger_info_update.chrg_pmax_mw;
 	charger_info->usb_online = charger_info_update.usb_online;
@@ -709,6 +729,7 @@ static void mmi_get_charger_info(struct mmi_glink_chip *chip)
 	charger_info->wls_tx_enabled = charger_info_update.wls_tx_enabled;
 	charger_info->icm_sm_st = charger_info_update.icm_sm_st;
 	charger_info->chrg_otg_enabled = charger_info_update.chrg_otg_enabled;
+	charger_info->chrg_stat = charger_info_update.chrg_stat;
 
 	if (charger_info->chrg_present != charger_info_update.chrg_present && !charger_info_update.chrg_present) {
 		qti_encrypt_authentication(chip);
@@ -717,57 +738,6 @@ static void mmi_get_charger_info(struct mmi_glink_chip *chip)
 	if (!charger_info_update.chrg_present && charger_info_update.chrg_type != 0)
 		charger_info->chrg_present = 1;
 
-	prev_cid = lpd_info->lpd_cid;
-	prev_lpd = lpd_info->lpd_present;
-	lpd_info->lpd_cid = -1;
-	rc = qti_charger_get_property(OEM_PROP_LPD_INFO,
-				lpd_info,
-				sizeof(struct mmi_lpd_info));
-	if (rc) {
-		rc = 0;
-		memset(lpd_info, 0, sizeof(struct mmi_lpd_info));
-		lpd_info->lpd_cid = -1;
-	}
-
-	if ((prev_cid != -1 && lpd_info->lpd_cid == -1) ||
-            (!prev_lpd && lpd_info->lpd_present)) {
-		if (!lpd_ulog_triggered && !otg_ulog_triggered)
-			bm_ulog_enable_log(true);
-		lpd_ulog_triggered = true;
-		mmi_err(chip, "LPD: present=%d, rsbu1=%d, rsbu2=%d, cid=%d\n",
-			lpd_info->lpd_present,
-			lpd_info->lpd_rsbu1,
-			lpd_info->lpd_rsbu2,
-			lpd_info->lpd_cid);
-	} else if ((lpd_info->lpd_cid != -1 && prev_cid == -1) ||
-		   (!lpd_info->lpd_present && prev_lpd)) {
-		if (lpd_ulog_triggered && !otg_ulog_triggered)
-			bm_ulog_enable_log(false);
-		lpd_ulog_triggered = false;
-		mmi_warn(chip, "LPD: present=%d, rsbu1=%d, rsbu2=%d, cid=%d\n",
-			lpd_info->lpd_present,
-			lpd_info->lpd_rsbu1,
-			lpd_info->lpd_rsbu2,
-			lpd_info->lpd_cid);
-	} else {
-		mmi_info(chip, "LPD: present=%d, rsbu1=%d, rsbu2=%d, cid=%d\n",
-			lpd_info->lpd_present,
-			lpd_info->lpd_rsbu1,
-			lpd_info->lpd_rsbu2,
-			lpd_info->lpd_cid);
-	}
-
-	if (charger_info->chrg_otg_enabled && (charger_info->chrg_mv < VBUS_MIN_MV)) {
-		if (!otg_ulog_triggered && !lpd_ulog_triggered)
-			bm_ulog_enable_log(true);
-		otg_ulog_triggered = true;
-		mmi_err(chip, "OTG: vbus collapse, vbus=%duV\n", charger_info->chrg_mv);
-	} else if (charger_info->chrg_otg_enabled) {
-		if (otg_ulog_triggered && !lpd_ulog_triggered)
-			bm_ulog_enable_log(false);
-		otg_ulog_triggered = false;
-	}
-
 	if (batt_host->num_thermal_primary_levels > 0) {
 		mmi_info(chip, "Thermal: primary_limit_level = %d, primary_fcc_ma = %d, secondary_limit_level = %d, thermal_secondary_fcc_ma = %d",
 					batt_host->curr_thermal_primary_level, batt_host->thermal_primary_fcc_ua,
@@ -775,20 +745,76 @@ static void mmi_get_charger_info(struct mmi_glink_chip *chip)
 	}
 
 	mmi_info(chip, "chrg_present %d, chrg_type %d, chrg_pmax_mw %d,"
-		" chrg_mv %d, chrg_ma %d, usb_in %d, wls_in %d, wls_tx %d, icm_sm_st %d, chrg_otg_enabled %d, thermal_level %d\n",
+		" chrg_uv %d, chrg_ua %d, usb_in %d, wls_in %d, wls_tx %d, chrg_otg_enabled %d, thermal_level %d, icm_sm_st %d, chrg_stat %d\n",
 		charger_info->chrg_present,
 		charger_info->chrg_type,
 		charger_info->chrg_pmax_mw,
-		charger_info->chrg_mv,
-		charger_info->chrg_ma,
+		charger_info->chrg_uv,
+		charger_info->chrg_ua,
 		charger_info->usb_online,
 		charger_info->wls_online,
 		charger_info->wls_tx_enabled,
-		charger_info->icm_sm_st,
 		charger_info->chrg_otg_enabled,
-		thermal_level);
+		thermal_level,
+		charger_info->icm_sm_st,
+		charger_info->chrg_stat);
+
+	rc = qti_charger_get_property(OEM_PROP_PMIC_INFO,
+				&pmic_info_update,
+				sizeof(struct mmi_pmic_info));
+	if (rc)
+		return;
+
+	pmic_info->pmic_vbatt_uv = pmic_info_update.pmic_vbatt_uv;
+	pmic_info->pmic_ibatt_ua = pmic_info_update.pmic_ibatt_ua;
+	pmic_info->aicl_result_ma = pmic_info_update.aicl_result_ma;
+	pmic_info->icl_result_ma = pmic_info_update.icl_result_ma;
+	pmic_info->vfloat_mv = pmic_info_update.vfloat_mv;
+	pmic_info->pmic_suspend_st = pmic_info_update.pmic_suspend_st;
+	pmic_info->pmic_vph_uv = pmic_info_update.pmic_vph_uv;
+
+	mmi_info(chip, "pmic_vph_mv %d, pmic_vbatt_mv %d, pmic_ibatt_ma %d, pmic_suspend_st %d, vfloat_mv %d, aicl_result_ma %d, icl_result_ma %d\n",
+		pmic_info->pmic_vph_uv / 1000,
+		pmic_info->pmic_vbatt_uv / 1000,
+		pmic_info->pmic_ibatt_ua / 1000,
+		pmic_info->pmic_suspend_st,
+		pmic_info->vfloat_mv,
+		pmic_info->aicl_result_ma,
+		pmic_info->icl_result_ma);
 
 	bm_ulog_print_log(OEM_BM_ULOG_SIZE);
+
+	if(chip->charger_present_dynamic_control_bm_ulog && !bm_ulog_is_enabled_by_cmd()) {
+		if(chip->charger_info.chrg_present){
+			bm_ulog_enable_log(true, 1000);
+			chip->bm_ulog_enabled = true;
+			//mmi_info(chip, "enable adsp log during chg present!\n");
+		}else if(!chip->charger_info.chrg_present && chip->bm_ulog_enabled) {
+			bm_ulog_enable_log(false, 0);
+			chip->bm_ulog_enabled = false;
+			//mmi_info(chip, "disable adsp log during chg not present!\n");
+		}
+	}
+
+}
+
+#define TAPER_COUNT 2
+static bool mmi_charger_is_charge_tapered(struct mmi_glink_chip *chip, int tapered_ma)
+{
+	bool is_tapered = false;
+	struct battery_info *batt_info = &chip->battery_info;
+	static int chrg_taper_cnt = 0;
+
+	if (abs(batt_info->batt_ua / 1000) <= tapered_ma) {
+		if (chrg_taper_cnt >= TAPER_COUNT) {
+			is_tapered = true;
+			chrg_taper_cnt = 0;
+		} else
+			chrg_taper_cnt++;
+	} else
+		chrg_taper_cnt = 0;
+
+	return is_tapered;
 }
 
 static void mmi_update_charger_status(struct mmi_glink_chip *chip)
@@ -799,9 +825,10 @@ static void mmi_update_charger_status(struct mmi_glink_chip *chip)
 	struct battery_info *batt_info = &chip->battery_info;
 	struct battery_host *batt_host = chip->batt_host;
 	bool voltage_full;
-	int demo_fv_mv = 0, batt_mv = 0;
+	int demo_fv_mv = 0, batt_mv = 0, chrg_iterm_ma = 0;
 
 	demo_fv_mv = batt_host->demo_fv_mv;
+	chrg_iterm_ma = batt_host->chrg_iterm_ma;
 	batt_mv = batt_info->batt_uv / 1000;
 
 	if (chip->enable_charging_limit && chip->factory_version) {
@@ -825,13 +852,16 @@ static void mmi_update_charger_status(struct mmi_glink_chip *chip)
 		status->pres_chrg_step = STEP_NONE;
 	} else if (batt_info->batt_status == POWER_SUPPLY_STATUS_FULL) {
 		status->pres_chrg_step = STEP_FULL;
-	} else if (status->charging_limit_modes == CHARGING_LIMIT_RUN) {
+	} else if (status->charging_limit_modes == CHARGING_LIMIT_RUN ||
+			status->pres_temp_zone == ZONE_HOT ||
+			status->pres_temp_zone == ZONE_COLD) {
 		status->pres_chrg_step = STEP_STOP;
 
 	} else if (chip->demo_mode) { /* Demo Mode */
 		status->pres_chrg_step = STEP_DEMO;
 		voltage_full = ((status->demo_chrg_suspend == false) &&
-		    ((batt_mv + HYST_STEP_MV) >= demo_fv_mv));
+		    ((batt_mv + HYST_STEP_MV) >= demo_fv_mv) &&
+			mmi_charger_is_charge_tapered(chip, chrg_iterm_ma));
 
 		if ((status->demo_chrg_suspend == false) &&
 		    ((batt_info->batt_soc >= chip->demo_mode) || voltage_full)) {
@@ -841,16 +871,69 @@ static void mmi_update_charger_status(struct mmi_glink_chip *chip)
 		    (batt_info->batt_soc <= (status->demo_full_soc - DEMO_MODE_HYS_SOC))) {
 			status->demo_chrg_suspend = false;
 		}
-
+		mmi_info(chip, "voltage_full %d, batt_mv %d, demo_mode %d, demo_full_soc %d, batt_soc %d",
+			voltage_full, batt_mv, chip->demo_mode, status->demo_full_soc, batt_info->batt_soc);
 	} else {
 		status->pres_chrg_step = STEP_NORM;
 	}
 
-	mmi_info(chip, "StepChg: %s, LimitMode: %d, DemoSuspend: %d\n",
+	mmi_info(chip, "StepChg: %s, TempZone: %d, LimitMode: %d, DemoSuspend: %d\n",
 		stepchg_str[(int)status->pres_chrg_step],
+		status->pres_temp_zone,
 		status->charging_limit_modes,
 		status->demo_chrg_suspend);
 
+}
+
+static void mmi_charger_set_constraint(struct mmi_glink_chip *chip)
+{
+	int rc;
+	u32 value;
+
+	if (chip->demo_mode != chip->charger_constraint.demo_mode) {
+		value = chip->demo_mode;
+		rc = qti_charger_set_property(OEM_PROP_DEMO_MODE,
+					&value,
+					sizeof(value));
+		if (!rc)
+			chip->charger_constraint.demo_mode = chip->demo_mode;
+	}
+
+	if (chip->dcp_pmax != chip->charger_constraint.dcp_pmax) {
+		value = chip->dcp_pmax;
+		rc = qti_charger_set_property(OEM_PROP_CHG_BC_PMAX,
+					&value,
+					sizeof(value));
+		if (!rc)
+			chip->charger_constraint.dcp_pmax = chip->dcp_pmax;
+	}
+
+	if (chip->hvdcp_pmax != chip->charger_constraint.hvdcp_pmax) {
+		value = chip->hvdcp_pmax;
+		rc = qti_charger_set_property(OEM_PROP_CHG_QC_PMAX,
+					&value,
+					sizeof(value));
+		if (!rc)
+			chip->charger_constraint.hvdcp_pmax = chip->hvdcp_pmax;
+	}
+
+	if (chip->pd_pmax != chip->charger_constraint.pd_pmax) {
+		value = chip->pd_pmax;
+		rc = qti_charger_set_property(OEM_PROP_CHG_PD_PMAX,
+					&value,
+					sizeof(value));
+		if (!rc)
+			chip->charger_constraint.pd_pmax = chip->pd_pmax;
+	}
+
+	if (chip->wls_pmax != chip->charger_constraint.wls_pmax) {
+		value = chip->wls_pmax;
+		qti_charger_set_property(OEM_PROP_CHG_WLS_PMAX,
+					&value,
+					sizeof(value));
+		if (!rc)
+			chip->charger_constraint.wls_pmax = chip->wls_pmax;
+	}
 }
 
 static void mmi_configure_charger(struct mmi_glink_chip *chip)
@@ -903,24 +986,33 @@ static void mmi_configure_charger(struct mmi_glink_chip *chip)
 		chip->charging_disable = false;
 	}
 
+	if (chip->force_chrg_disabled_batt_err) {
+		chip->charging_disable = true;
+	}
+
 	if (pre_charger_suspend != chip->charger_suspend) {
 		value = chip->charger_suspend;
-		qti_charger_set_property(OEM_PROP_CHG_SUSPEND,
+		if(qti_charger_set_property(OEM_PROP_CHG_SUSPEND,
 					&value,
-					sizeof(value));
+					sizeof(value)) < 0) {
+		    chip->charger_suspend = pre_charger_suspend;
+        }
 	}
 
 	if (pre_charging_disable!= chip->charging_disable) {
 		value = chip->charging_disable;
-		qti_charger_set_property(OEM_PROP_CHG_DISABLE,
+		if(qti_charger_set_property(OEM_PROP_CHG_DISABLE,
 					&value,
-					sizeof(value));
+					sizeof(value)) < 0) {
+		    chip->charging_disable = pre_charging_disable;
+        }
 	}
 
 	mmi_info(chip, "CDIS=%d, CSUS=%d, CFULL=%d\n",
 		chip->charging_disable,
 		chip->charger_suspend,
 		charging_full);
+
 	return;
 }
 
@@ -956,6 +1048,7 @@ static void mmi_charger_heartbeat_work(struct work_struct *work)
 	mmi_get_charger_info(chip);
 	mmi_update_charger_status(chip);
 	mmi_configure_charger(chip);
+	mmi_charger_set_constraint(chip);
 	mmi_update_charger_event(chip);
 	mutex_unlock(&chip->charger_lock);
 
@@ -1063,6 +1156,37 @@ static bool mmi_is_factory_mode(void)
 	of_node_put(np);
 
 	return factory_mode;
+}
+
+static bool mmi_is_softbank_sku(void)
+{
+	struct device_node *np = of_find_node_by_path("/chosen");
+	bool is_softbank = false;
+	const char *bootargs = NULL;
+	char *carrier = NULL;
+	char *end = NULL;
+
+	if (this_chip && this_chip->is_softbank)
+		return true;
+
+	if (!np)
+		return is_softbank;
+
+	if (!of_property_read_string(np, "bootargs", &bootargs)) {
+		carrier = strstr(bootargs, "androidboot.carrier=");
+		if (carrier) {
+			end = strpbrk(carrier, " ");
+			carrier = strpbrk(carrier, "=");
+		}
+		if (carrier &&
+		    end > carrier &&
+		    strnstr(carrier, "softbank", end - carrier)) {
+				is_softbank = true;
+		}
+	}
+	of_node_put(np);
+
+	return is_softbank;
 }
 
 static bool mmi_is_factory_version(void)
@@ -1253,6 +1377,10 @@ int mmi_glink_dev_init(struct mmi_glink_chip *chip,
 			mmi_info(chip, "wireless glink device register");
 			glink_dev = wireless_glink_device_register(chip, &dev_dts[i]);
 			break;
+		case DEV_USB:
+			mmi_info(chip, "usb glink device register");
+			glink_dev = usb_glink_device_register(chip, &dev_dts[i]);
+			break;
 		default:
 			mmi_err(chip,"No glink_dev found , dev_idx %d, dev type %d !\n", i, dev_dts[i].dev_type);
 			break;
@@ -1348,6 +1476,10 @@ static int mmi_parse_dt(struct mmi_glink_chip *chip)
 	if (rc)
 		chip->ibat_calc_alignment_time = UINT_MAX;
 
+	chip->charger_present_dynamic_control_bm_ulog =
+			of_property_read_bool(node, "mmi,charger_control_bm_ulog");
+	chip->bm_ulog_enabled = false;
+
 	for_each_child_of_node(node, child)
 		chip->glink_dev_num++;
 
@@ -1436,6 +1568,30 @@ cleanup:
 	return 0;
 }
 
+static int mmi_glink_charger_notify_callback(struct notifier_block *nb,
+		unsigned long event, void *data)
+{
+	struct qti_charger_notify_data *notify_data = data;
+	struct mmi_glink_chip *chip = container_of(nb, struct mmi_glink_chip, mmi_glink_nb);
+
+	if (notify_data->receiver != OEM_NOTIFY_RECEIVER_MMI_CHG) {
+		mmi_err(chip, "Skip mis-matched receiver: %#x\n", notify_data->receiver);
+		return 0;
+	}
+
+	switch (event) {
+	case NOTIFY_EVENT_MMI_GLINK_STATE_UP:
+		memset(&chip->charger_constraint, 0, sizeof(chip->charger_constraint));
+		mmi_info(chip, "receive GLINK_STATE_UP, clear mmi_charger constraint\n");
+		break;
+	default:
+		mmi_err(chip, "Unknown mmi_glink event: %#lx\n", event);
+		break;
+	}
+
+	return 0;
+}
+
 static int mmi_charger_probe(struct platform_device *pdev)
 {
 	int rc = 0;
@@ -1451,6 +1607,7 @@ static int mmi_charger_probe(struct platform_device *pdev)
 	chip->suspended = 0;
 	chip->factory_version = mmi_is_factory_version();
 	chip->factory_mode = mmi_is_factory_mode();
+	chip->is_softbank = mmi_is_softbank_sku();
 	chip->disable_charging_vote.name = "disable_charging";
 	chip->suspend_charger_vote.name = "suspend_charger";
 	chip->charger_status.charging_limit_modes = CHARGING_LIMIT_UNKNOWN;
@@ -1525,6 +1682,11 @@ static int mmi_charger_probe(struct platform_device *pdev)
 		mmi_err(chip, "couldn't create wls_pmax\n");
 	}
 
+	chip->mmi_glink_nb.notifier_call = mmi_glink_charger_notify_callback;
+	rc = qti_charger_register_notifier(&chip->mmi_glink_nb);
+	if (rc)
+		pr_err("Failed to register mmi_glink notifier, rc=%d\n", rc);
+
 	/* Register the notifier for the psy updates*/
 	chip->mmi_psy_notifier.notifier_call = mmi_psy_notifier_call;
 	rc = power_supply_reg_notifier(&chip->mmi_psy_notifier);
@@ -1576,6 +1738,7 @@ static int mmi_charger_remove(struct platform_device *pdev)
 	battery_glink_device_unregister();
 	balance_glink_device_unregister();
 	wireless_glink_device_unregister();
+	usb_glink_device_unregister();
 	PM_WAKEUP_UNREGISTER(chip->mmi_hb_wake_source);
 	ipc_log_context_destroy(chip->ipc_log);
 	mmi_glink_class_exit();

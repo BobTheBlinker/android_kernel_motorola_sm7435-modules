@@ -72,6 +72,9 @@
 #ifdef CONFIG_FTS_LAST_TIME
 #include <linux/ktime.h>
 #endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 30)
+#include <linux/pinctrl/consumer.h>
+#endif
 
 /*****************************************************************************
 * Private constant and macro definitions using #define
@@ -322,6 +325,9 @@ struct fts_ts_data {
 #endif
     u8 gsx_cmd;
 
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+    bool palm_on;
+#endif
 #ifdef FOCALTECH_PALM_SENSOR_EN
     bool palm_detection_enabled;
     enum palm_sensor_lazy_set palm_detection_lazy_set;
@@ -347,6 +353,9 @@ struct fts_ts_data {
 #endif
 #ifdef CONFIG_FTS_LAST_TIME
     ktime_t last_event_time;
+#endif
+#ifdef CONFIG_FTS_HARDWARE_STATUS
+	u8 open_status;
 #endif
 
 };

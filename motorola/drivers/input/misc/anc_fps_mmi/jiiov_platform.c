@@ -13,6 +13,11 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
  * Public License for more details.
  **/
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 30)
+#include <linux/pinctrl/consumer.h>
+#endif
+
 #include <linux/atomic.h>
 #include <linux/cdev.h>
 #include <linux/delay.h>
@@ -809,7 +814,7 @@ static int anc_request_named_gpio(struct anc_data *p_data, const char *label, in
 
 static int anc_irq_init(struct anc_data *p_data) {
     int ret_val = -1;
-    int irqf = IRQF_TRIGGER_FALLING | IRQF_ONESHOT;  // IRQF_TRIGGER_FALLING or IRQF_TRIGGER_RISING
+    int irqf = IRQF_TRIGGER_RISING | IRQF_ONESHOT;  // IRQF_TRIGGER_FALLING or IRQF_TRIGGER_RISING
 
     CHECK_PTR_PARAM(p_data);
 
@@ -1658,8 +1663,12 @@ static int anc_create_device(struct anc_data *p_data) {
     struct device *device_ptr = NULL;
 
     CHECK_PTR_PARAM(p_data);
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
     p_data->dev_class = class_create(THIS_MODULE, ANC_DEVICE_NAME);
+#else
+    p_data->dev_class = class_create(ANC_DEVICE_NAME);
+#endif
+
     if (IS_ERR(p_data->dev_class)) {
         ANC_LOGE("class_create failed");
         return -ENODEV;
@@ -1946,11 +1955,41 @@ static anc_driver_t anc_driver = {
     .remove = anc_remove,
     .shutdown = anc_shutdown,
 };
+static bool is_fingerprint_disabled(void)
+{
+	struct device_node *np = of_find_node_by_path("/chosen");
+	bool rt = false;
+	const char *bootargs = NULL;
+	char *is_hw_enabled = NULL;
+
+
+	if (!np) {
+		printk(KERN_INFO "is_fingerprint_disabled np is null\n");
+		return false;
+	}
+
+	if (!of_property_read_string(np, "bootargs", &bootargs)) {
+		is_hw_enabled = strstr(bootargs,"androidboot.disable_hw=1");
+		printk(KERN_INFO "of_property_read_string is_hw_enabled=%s\n", is_hw_enabled);
+		if (is_hw_enabled) {
+			rt = true;
+		}
+	}
+
+	of_node_put(np);
+
+	printk(KERN_INFO "is_fingerprint_disabled rt = %d\n", rt);
+	return rt;
+}
 
 static int __init ancfp_init(void) {
     int ret_val = -1;
 
     ANC_LOGD("entry");
+    if (is_fingerprint_disabled()) {
+        printk(KERN_INFO "Hardware module driver is disabled.\n");
+        return -ENODEV;
+    }
 
 #if defined(ANC_USE_REE_SPI) || defined(MTK_PLATFORM)
     ret_val = spi_register_driver(&anc_driver);

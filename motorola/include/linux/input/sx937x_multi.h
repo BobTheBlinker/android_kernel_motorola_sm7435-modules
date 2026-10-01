@@ -257,11 +257,22 @@
 #define MAX_CHANNEL_NUMBER 8
 #define CHECK_TIMES  3
 
+#define NUM_PHASES 8
+
 typedef enum{
 	SX937X_POWER_SUPPLY_TYPE_PMIC_LDO,	// pmic LDO
 	SX937X_POWER_SUPPLY_TYPE_ALWAYS_ON, // power-supply always on
 	SX937X_POWER_SUPPLY_TYPE_EXTERNAL_LDO,	// external LDO
 }sx937x_power_supply_type_t;
+
+typedef enum{
+	PROX_STATE_0,
+	PROX_STATE_1,
+	PROX_STATE_2,
+	PROX_STATE_3,
+	PROX_STATE_4,
+}PROX_STATE;
+
 
 /**************************************
  *   define platform data
@@ -453,7 +464,7 @@ typedef struct sx937x_platform_data
 	bool reinit_on_cali;
 	bool reinit_on_i2c_failure;
 	bool state_flip_open;
-
+	int capsensor_upd_support;
 	int (*get_is_nirq_low)(void);
 
 	int     (*init_platform_hw)(struct i2c_client *client);

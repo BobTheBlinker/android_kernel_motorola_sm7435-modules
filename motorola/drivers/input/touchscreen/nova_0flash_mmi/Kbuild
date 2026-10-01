@@ -1,8 +1,7 @@
 # add -Wall to try to catch everything we can.
 EXTRA_CFLAGS += -Wall
-EXTRA_CFLAGS += -I$(KERNEL_SRC)/../sm7435-modules/motorola/include \
-		-I$(KERNEL_SRC)/../sm7435-modules/motorola/drivers/input/touchscreen/nova_0flash_mmi
-EXTRA_CFLAGS += -DCFG_CTS_FOR_GKI
+EXTRA_CFLAGS += -I$(ANDROID_BUILD_TOP)/motorola/kernel/modules/include \
+		-I$(ANDROID_BUILD_TOP)/motorola/kernel/modules/drivers/input/touchscreen/nova_0flash_mmi
 
 ifeq ($(filter m y, $(CONFIG_TOUCHSCREEN_NT36xxx_HOSTDL_SPI)),)
 	obj-m := nova_0flash_mmi.o
@@ -33,6 +32,10 @@ endif
 
 ifneq ($(filter m y,$(CONFIG_INPUT_NOVA_DRM_PANEL)),)
 	EXTRA_CFLAGS += -DNVT_CONFIG_DRM_PANEL
+endif
+
+ifeq ($(TARGET_BUILD_VARIANT),user)
+	EXTRA_CFLAGS += -DCFG_CTS_FOR_GKI
 endif
 
 ifneq ($(filter m y,$(CONFIG_TOUCH_PANEL_NOTIFICATIONS)),)
@@ -96,7 +99,7 @@ ifneq ($(filter m y,$(CONFIG_INPUT_TOUCHSCREEN_MMI_NVT)),)
         EXTRA_CFLAGS += -DTS_MMI_TOUCH_MULTIWAY_UPDATE_FW
     endif
 endif
-KBUILD_EXTRA_SYMBOLS += $(OUT_DIR)/Module.symvers
+KBUILD_EXTRA_SYMBOLS += $(CURDIR)/../../kernel/msm-$(MODULE_KERNEL_VERSION)/Module.symvers
 
 ifneq ($(filter m y,$(CONFIG_GTP_DDA_STYLUS)),)
     EXTRA_CFLAGS += -DCONFIG_MOTO_DDA_PASSIVESTYLUS

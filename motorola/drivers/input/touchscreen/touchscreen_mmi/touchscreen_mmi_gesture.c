@@ -209,13 +209,12 @@ static inline void update_poison_center(struct touch_event_data *tev)
 }
 #endif /* TS_MMI_TOUCH_GESTURE_POISON_EVENT */
 
-static int _ts_mmi_gesture_handler(struct gesture_event_data *gev,
-				   struct input_dev *input_dev)
+static int ts_mmi_gesture_handler(struct gesture_event_data *gev)
 {
 	int key_code;
+	bool need2report = true;
 	struct ts_mmi_dev *touch_cdev = sensor_pdata->touch_cdev;
 	struct ts_mmi_dev_pdata *ppdata = &touch_cdev->pdata;
-	unsigned char mode_type = touch_cdev->gesture_mode_type;
 
 	if (ppdata->resolution_boost) {
 		gev->evdata.x /= ppdata->resolution_boost;
@@ -223,21 +222,12 @@ static int _ts_mmi_gesture_handler(struct gesture_event_data *gev,
 	}
 	switch (gev->evcode) {
 	case 1:
-		if (!(mode_type & TS_MMI_GESTURE_SINGLE))
-			return 1;
-
 		key_code = BTN_TRIGGER_HAPPY3;
 		input_report_abs(sensor_pdata->input_sensor_dev, ABS_X, gev->evdata.x);
 		input_report_abs(sensor_pdata->input_sensor_dev, ABS_Y, gev->evdata.y);
 		pr_info("%s: single tap; x=%d, y=%d\n", __func__, gev->evdata.x, gev->evdata.y);
 			break;
 	case 2:
-		if (!(mode_type & TS_MMI_GESTURE_ZERO))
-			return 1;
-
-		touch_cdev->udfps_pressed = true;
-		sysfs_notify(&DEV_MMI->kobj, NULL, "udfps_pressed");
-
 		key_code = BTN_TRIGGER_HAPPY4;
 		if(gev->evdata.x == 0)
 			gev->evdata.x = touch_cdev->pdata.fod_x ;
@@ -248,52 +238,29 @@ static int _ts_mmi_gesture_handler(struct gesture_event_data *gev,
 		pr_info("%s: zero tap; x=%x, y=%x\n", __func__, gev->evdata.x, gev->evdata.y);
 		break;
 	case 3:
-		if (!(mode_type & TS_MMI_GESTURE_ZERO))
-			return 1;
-
 		key_code = BTN_TRIGGER_HAPPY5;
 		pr_info("%s: zero tap up\n", __func__);
 		break;
 	case 4:
-		if (!(mode_type & TS_MMI_GESTURE_DOUBLE))
-			return 1;
-
 		key_code = BTN_TRIGGER_HAPPY6;
 		input_report_abs(sensor_pdata->input_sensor_dev, ABS_X, gev->evdata.x);
 		input_report_abs(sensor_pdata->input_sensor_dev, ABS_Y, gev->evdata.y);
 		pr_info("%s: double tap; x=%d, y=%d\n", __func__, gev->evdata.x, gev->evdata.y);
-		touch_cdev->double_tap_pressed = true;
-		sysfs_notify(&DEV_MMI->kobj, NULL, "double_tap_pressed");
 		break;
 	default:
+		need2report = false;
 		pr_info("%s: unknown id=%x\n", __func__, gev->evcode);
-		return 1;
 	}
+
+	if (!need2report)
+		return 1;
 
 	input_report_key(sensor_pdata->input_sensor_dev, key_code, 1);
 	input_sync(sensor_pdata->input_sensor_dev);
 	input_report_key(sensor_pdata->input_sensor_dev, key_code, 0);
 	input_sync(sensor_pdata->input_sensor_dev);
 
-	if (input_dev) {
-		input_report_key(input_dev, key_code, 1);
-		input_sync(input_dev);
-		input_report_key(input_dev, key_code, 0);
-		input_sync(input_dev);
-	}
-
 	return 0;
-}
-
-static int ts_mmi_gesture_handler(struct gesture_event_data *gev)
-{
-	return _ts_mmi_gesture_handler(gev, NULL);
-}
-
-static int ts_mmi_gesture_handler_self(struct gesture_event_data *gev,
-				       struct input_dev *input_dev)
-{
-	return _ts_mmi_gesture_handler(gev, input_dev);
 }
 
 static int ts_mmi_cli_gesture_handler(struct gesture_event_data *gev)
@@ -479,7 +446,7 @@ bool ts_mmi_is_sensor_enable(void)
 static int ts_mmi_sensor_set_enable(struct sensors_classdev *sensors_cdev,
 		unsigned int enable)
 {
-#ifndef CONFIG_BOARD_USES_DOUBLE_TAP_CTRL
+#if !defined(CONFIG_BOARD_USES_DOUBLE_TAP_CTRL)
 	struct ts_mmi_sensor_platform_data *sensor_pdata = container_of(
 			sensors_cdev, struct ts_mmi_sensor_platform_data, ps_cdev);
 	struct ts_mmi_dev *touch_cdev = sensor_pdata->touch_cdev;
@@ -602,7 +569,7 @@ int ts_mmi_gesture_init(struct ts_mmi_dev *touch_cdev)
 		goto exit;
 	}
 
-	sensor_pdata = devm_kzalloc(&sensor_input_dev->dev,
+	sensor_pdata = devm_kzalloc(DEV_TS,
 			sizeof(struct ts_mmi_sensor_platform_data), GFP_KERNEL);
 	if (!sensor_pdata) {
 		dev_err(DEV_TS, "%s: Failed to allocate memory", __func__);
@@ -647,7 +614,6 @@ int ts_mmi_gesture_init(struct ts_mmi_dev *touch_cdev)
 
 	/* export report gesture function to vendor */
 	touch_cdev->mdata->exports.report_gesture = ts_mmi_gesture_handler;
-	touch_cdev->mdata->exports.report_gesture_self = ts_mmi_gesture_handler_self;
 	/* export report touch event function to vendor */
 	touch_cdev->mdata->exports.report_touch_event = ts_mmi_touch_event_handler;
 
@@ -661,7 +627,7 @@ free_touch_events_data:
 		devm_kfree(DEV_TS, events_data);
 free_sensor_pdata:
 	if (sensor_input_dev && sensor_pdata)
-		devm_kfree(&sensor_input_dev->dev, sensor_pdata);
+		devm_kfree(DEV_TS, sensor_pdata);
 free_sensor_input_dev:
 	if (sensor_input_dev)
 		input_free_device(sensor_input_dev);
@@ -672,11 +638,21 @@ exit:
 int ts_mmi_gesture_remove(struct ts_mmi_dev *touch_cdev)
 {
 	sensors_classdev_unregister(&sensor_pdata->ps_cdev);
-	input_unregister_device(sensor_pdata->input_sensor_dev);
-	devm_kfree(&sensor_pdata->input_sensor_dev->dev, sensor_pdata);
-	devm_kfree(DEV_TS, events_data);
-	sensor_pdata = NULL;
-	events_data = NULL;
+	if (sensor_pdata->input_sensor_dev) {
+		input_unregister_device(sensor_pdata->input_sensor_dev);
+		input_free_device(sensor_pdata->input_sensor_dev);
+		sensor_pdata->input_sensor_dev = NULL;
+	}
+
+	if (sensor_pdata) {
+		devm_kfree(DEV_TS, sensor_pdata);
+		sensor_pdata = NULL;
+	}
+
+	if (events_data) {
+		devm_kfree(DEV_TS, events_data);
+		events_data = NULL;
+	}
 
 	return 0;
 }
@@ -692,7 +668,7 @@ int ts_mmi_cli_gesture_init(struct ts_mmi_dev *touch_cdev)
 		goto exit;
 	}
 
-	cli_sensor_pdata = devm_kzalloc(&sensor_input_dev->dev,
+	cli_sensor_pdata = devm_kzalloc(DEV_TS,
 			sizeof(struct ts_mmi_sensor_platform_data), GFP_KERNEL);
 	if (!cli_sensor_pdata) {
 		dev_err(DEV_TS, "%s: Failed to allocate memory", __func__);
@@ -738,7 +714,7 @@ unregister_sensor_input_device:
 	sensor_input_dev = NULL;
 free_sensor_pdata:
 	if (sensor_input_dev && cli_sensor_pdata)
-		devm_kfree(&sensor_input_dev->dev, cli_sensor_pdata);
+		devm_kfree(DEV_TS, cli_sensor_pdata);
 free_sensor_input_dev:
 	if (sensor_input_dev)
 		input_free_device(sensor_input_dev);
@@ -749,10 +725,16 @@ exit:
 int ts_mmi_cli_gesture_remove(struct ts_mmi_dev *touch_cdev)
 {
 	sensors_classdev_unregister(&cli_sensor_pdata->ps_cdev);
-	input_unregister_device(cli_sensor_pdata->input_sensor_dev);
-	devm_kfree(&cli_sensor_pdata->input_sensor_dev->dev, cli_sensor_pdata);
-	cli_sensor_pdata = NULL;
+	if (cli_sensor_pdata->input_sensor_dev) {
+		input_unregister_device(cli_sensor_pdata->input_sensor_dev);
+		input_free_device(cli_sensor_pdata->input_sensor_dev);
+		cli_sensor_pdata->input_sensor_dev = NULL;
+	}
 
+	if (cli_sensor_pdata) {
+		devm_kfree(DEV_TS, cli_sensor_pdata);
+		cli_sensor_pdata = NULL;
+	}
 	return 0;
 }
 

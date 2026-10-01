@@ -20,16 +20,19 @@
  * software for any purpose without first obtaining a commercial license from
  * Qorvo. Please contact Qorvo to inquire about licensing terms.
  */
-#include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/of.h>
-#include <linux/version.h>
+#include <linux/skbuff.h>
 #ifdef CONFIG_EVENT_TRACING
 #include <linux/trace_events.h> /* for trace_set_clr_event() */
 #endif
+#include <linux/mmi_device.h>
+#include <linux/version.h>
+#include <linux/wait.h>
 
 #include "qm35_core.h"
 #include "qm35_hsspi.h"
@@ -129,6 +132,29 @@ int qm35_spi_isr(struct qm35_spi *qmspi)
 }
 
 /**
+ * qm35_spi_awake_handle() - QM35 transport handler for AWAKE packets.
+ * @data: Pointer to qm35_spi structure.
+ * @skb: AWAKE packet received.
+ *
+ * Context: Always called from qm35_transport_event().
+ */
+static void qm35_spi_awake_handle(void *data, struct sk_buff *skb)
+{
+	struct qm35_spi *qmspi = data;
+
+	trace_qm35_spi_awake_handle(qmspi);
+	/* If FW send an AWAKE packet, we can use async wakeup. */
+	qmspi->async_wakeup = true;
+	/* Receiving an AWAKE packet is condition to wake-up qm35_spi_send(). */
+	qmspi->wakeup_event = true;
+	/* Starting with kernel version 6.1, wake_up return an int. But to
+	 * remain compatible with version 5.19 and less, assume it is void. */
+	wake_up(&qmspi->wakeup_wait);
+	/* Free the received skb. */
+	consume_skb(skb);
+}
+
+/**
  * qm35_spi_driver_probe() - Probe and initialize QM35 SPI device.
  * @spi: The SPI device to probe and initialize.
  *
@@ -150,19 +176,29 @@ static int qm35_spi_driver_probe(struct spi_device *spi)
 	struct device_node *node = spi->dev.of_node;
 	struct qm35_transport transport = qm35_spi_transport;
 	struct clk *uwb_clk;
+	bool uwb_clk_enabled = false;
 
 	int rc;
 
 	dev_info(&spi->dev, "Probing new QM35 SPI device...\n");
 
+	if (spi->dev.of_node && !mmi_device_is_available(spi->dev.of_node)) {
+		pr_err("%s : mmi: device not supported\n", __func__);
+		return -ENODEV;
+	} else {
+		pr_err("%s : supported uwb device found\n", __func__);
+	}
+
 	uwb_clk = devm_clk_get(&spi->dev, "uwb_rf_clk5");
-    if (IS_ERR(uwb_clk)) {
-            dev_err(&spi->dev, "%s: uwb_clk not found", __func__);
-    } else {
-            rc = clk_prepare_enable(uwb_clk);
-            if(rc)
-                dev_err(&spi->dev, "%s: uwb_clk enable failed", __func__);
-    }
+	if (IS_ERR(uwb_clk)) {
+		dev_err(&spi->dev, "%s: uwb_clk not found", __func__);
+	} else {
+		rc = clk_prepare_enable(uwb_clk);
+		if(rc)
+			dev_err(&spi->dev, "%s: uwb_clk enable failed", __func__);
+		else
+			uwb_clk_enabled = true;
+	}
 
 
 	/* Parameters management. */
@@ -243,8 +279,19 @@ static int qm35_spi_driver_probe(struct spi_device *spi)
 	if (rc != 0)
 		goto err_setup_pm;
 
+#if IS_ENABLED(CONFIG_QM35_FLASHING)
 	/* Initialize firmware update mutex. */
 	mutex_init(&qmspi->fw.update_lock);
+#endif
+
+	/* Initialize info file mutex. */
+	mutex_init(&qmspi->info_mutex);
+
+	/* Init async wakeup support and packet handler. */
+	init_waitqueue_head(&qmspi->wakeup_wait);
+	qm35_transport_register(qm, QM35_TRANSPORT_MSG_AWAKE,
+				QM35_TRANSPORT_PRIO_NORMAL,
+				qm35_spi_awake_handle, qmspi);
 
 	/* Register MCPS 802.15.4 device */
 	rc = qm35_register_device(qm);
@@ -267,10 +314,22 @@ static int qm35_spi_driver_probe(struct spi_device *spi)
 #else
 	qm->transport_pid = spi->master->kworker.task->pid;
 #endif
+
+	if (uwb_clk_enabled) {
+		qmspi->clk_enabled = true;
+		qmspi->clk = uwb_clk;
+	}
 	return 0;
 
 err_register_hw:
+	mutex_lock(&qmspi->info_mutex);
+	if (qmspi->info_bin_attr.attr.name)
+		sysfs_remove_bin_file(&spi->dev.kobj, &qmspi->info_bin_attr);
+	mutex_unlock(&qmspi->info_mutex);
+	mutex_destroy(&qmspi->info_mutex);
+#if IS_ENABLED(CONFIG_QM35_FLASHING)
 	mutex_destroy(&qmspi->fw.update_lock);
+#endif
 	qm35_spi_pm_remove(qmspi);
 err_setup_pm:
 	qm35_thread_stop(qmspi);
@@ -309,10 +368,17 @@ static int qm35_spi_driver_remove(struct spi_device *spi)
 	/* Restore configured device max speed. */
 	spi->max_speed_hz = qmspi->of_max_speed_hz;
 	spi_setup(spi);
+	mutex_lock(&qmspi->info_mutex);
+	if (qmspi->info_bin_attr.attr.name)
+		sysfs_remove_bin_file(&spi->dev.kobj, &qmspi->info_bin_attr);
+	mutex_unlock(&qmspi->info_mutex);
+	mutex_destroy(&qmspi->info_mutex);
 	/* Unregister subsystems. */
 	qm35_unregister_device(qm);
+#if IS_ENABLED(CONFIG_QM35_FLASHING)
 	/* Mark the firmware update mutex uninitialized. */
 	mutex_destroy(&qmspi->fw.update_lock);
+#endif
 	/* Disable PM runtime subsystem. */
 	qm35_spi_pm_remove(qmspi);
 	/* Stop event processing thread. */

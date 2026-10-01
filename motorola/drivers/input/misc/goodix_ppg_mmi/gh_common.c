@@ -49,7 +49,7 @@
 /*************************************************************/
 
 /* debug log setting */
-u8 g_debug_level = DEBUG_LOG;
+u8 g_debug_level = ERR_LOG;
 
 /* align=2, 2 bytes align */
 /* align=4, 4 bytes align */
@@ -222,7 +222,7 @@ static void gh_class_read(unsigned short addr, unsigned short *val)
     ret = i2c_transfer(s_gh_dev->client->adapter, msgs, 2);
     if (0 > ret)
     {
-        gh_debug(ERR_LOG, "%s: i2c_transfer failed\n", __func__);
+        gh_debug(ERR_LOG, "%s: i2c_transfer failed ret = %d\n", __func__,ret);
     }
 
     *val = read_buf[0];
@@ -542,7 +542,7 @@ static long gh_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	case GH_IOC_RESET:
 		gh_debug(INFO_LOG, "%s: chip reset command\n", __func__);
-		gh_hw_reset(gh_dev, 0);
+		gh_hw_reset(gh_dev, 15);
 		break;
 
 	case GH_IOC_ENABLE_IRQ:
@@ -691,6 +691,7 @@ static int gh_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	struct device *dev;
 	int retval = 0;
 	int status = -EINVAL;
+	unsigned short val = 0;
 
 	FUNC_ENTRY();
 
@@ -748,7 +749,14 @@ static int gh_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	gh_hw_power_enable(gh_dev, 1);
 
 	/*hard reset sensor*/
-	gh_hw_reset(gh_dev, 0);
+	gh_hw_reset(gh_dev, 15);
+
+	//read chip id
+	gh_class_sendcmd(WAKE_UP_CMD);
+	gh_class_read(0x0034, &val);
+	gh_debug(ERR_LOG, "%s, chipid reg:0x0034=0x%04X\n", __func__,val);
+	if(0 == val)
+		return -EPROBE_DEFER;
 
 	/* create class */
 	gh_dev->class = class_create(THIS_MODULE, GH_CLASS_NAME);

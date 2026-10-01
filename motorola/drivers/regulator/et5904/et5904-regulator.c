@@ -21,6 +21,10 @@
 #include <linux/regulator/of_regulator.h>
 #include "et5904-regulator.h"
 
+#ifdef WL2868C_THEN_ET5904_ORDER
+extern int wl2868c_probe_completed;
+#endif
+
 enum slg51000_regulators {
 	ET5904_REGULATOR_LDO1 = 0,
 	ET5904_REGULATOR_LDO2,
@@ -140,7 +144,11 @@ static int et5904_get_status(struct regulator_dev * rdev)
 
 static const struct regulator_ops et5904_regl_ops = {
 	.enable = regulator_enable_regmap,
+#ifdef PICOLEAF_DATA_EN
+	.disable = NULL,
+#else
 	.disable = regulator_disable_regmap,
+#endif
 	.is_enabled = regulator_is_enabled_regmap,
 	.list_voltage = regulator_list_voltage_linear,
 	.map_voltage = regulator_map_voltage_linear,
@@ -287,6 +295,9 @@ static int et5904_i2c_probe(struct i2c_client *client,
 	struct et5904 *chip;
 	int error, cs_gpio, ret, i, value;
 	unsigned int chip_data = 0x00;
+#ifdef PICOLEAF_DATA_EN
+	unsigned int val;
+#endif
 
 	/* Set all register to initial value when probe driver to avoid register value was modified.
 	*/
@@ -297,13 +308,22 @@ static int et5904_i2c_probe(struct i2c_client *client,
 		{ET5904_LDO3_LDO4_SEQ, 	0x00},
 		{ET5904_SEQ_STATUS, 		0x00},
 	};
+
+#ifdef WL2868C_THEN_ET5904_ORDER
+	pr_info("et5904_i2c_probe Enter, wl2868c_probe_completed = %d\n", wl2868c_probe_completed);
+	if (wl2868c_probe_completed == 0) { //0 means wl2868c probe not compleated.
+		usleep_range(50000, 60000);
+		return -EPROBE_DEFER;
+	}
+#else
+	pr_info("et5904_i2c_probe Enter...\n");
+#endif
+
 	chip = devm_kzalloc(dev, sizeof(struct et5904), GFP_KERNEL);
 	if (!chip) {
 		dev_err(chip->dev, "et5904_i2c_probe Memory error...\n");
 		return -ENOMEM;
 	}
-
-	dev_info(chip->dev, "et5904_i2c_probe Enter...\n");
 
 	if (of_property_read_u32(dev->of_node, "etek,init-value", &value) < 0) {
 		dev_info(chip->dev, "et5904_i2c_probe no init_value, use default 0x0\n");
@@ -379,7 +399,16 @@ static int et5904_i2c_probe(struct i2c_client *client,
 	}
 
 	et5904_get_current_limit(chip->rdev[0]);
-
+#ifdef PICOLEAF_DATA_EN
+	dev_info(chip->dev, "overwrite 0E to 0D\n");
+	ret = regmap_write(chip->regmap, ET5904_LDO_EN, 0xd);
+	if (ret < 0) {
+			dev_err(chip->dev,"Failed to write register: 0x%x\n",
+				ET5904_LDO_EN);
+		}
+	regmap_read(chip->regmap, ET5904_LDO_EN, &val);
+	dev_info(chip->dev, "0x0E data : %d\n", val);
+#endif
 	dev_info(chip->dev, "et5904_i2c_probe Exit...\n");
 
 	return ret;

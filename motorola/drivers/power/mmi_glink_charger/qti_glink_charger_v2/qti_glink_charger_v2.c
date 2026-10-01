@@ -101,12 +101,24 @@ struct oem_write_buf_resp_msg {
 	u32			ret_code;
 };
 
-struct lpd_info {
-	int lpd_present;
+struct usb_info {
+	int cid_st;
+	unsigned int vbus_st;
+	bool otg_st;
+	bool cc_st;
+	int partner_type;
+	int pd_active;
+	int legacy_cable;
+	int lpd_st;
 	int lpd_rsbu1;
 	int lpd_rsbu2;
-	int lpd_cid;
+	int lpd_cc1;
+	int lpd_cc2;
+	int lpd_dp;
+	int lpd_dm;
 };
+
+
 
 struct qti_charger {
 	char				*name;
@@ -128,7 +140,7 @@ struct qti_charger {
 	bool factory_mode;
 	bool factory_version;
 
-	struct lpd_info			lpd_info;
+	struct usb_info			usb_info;
 	void				*ipc_log;
 	bool				*debug_enabled;
 };
@@ -713,6 +725,99 @@ static DEVICE_ATTR(wireless_chip_id, S_IRUGO,
 		wireless_chip_id_show,
 		NULL);
 
+static ssize_t wireless_fw_ver_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	int data;
+	struct qti_charger *chg = dev_get_drvdata(dev);
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	qti_charger_read(chg, OEM_PROP_WLS_FW_VER,
+				&data,
+				sizeof(int));
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "0x%04x\n", data);
+}
+
+static DEVICE_ATTR(wireless_fw_ver, S_IRUGO,
+		wireless_fw_ver_show,
+		NULL);
+
+static ssize_t tcmd_current_battid_show(struct device *dev,
+                struct device_attribute *attr, char *buf)
+{
+	char batt_id[32]={0};
+	int rc;
+	struct qti_charger *chg = dev_get_drvdata(dev);
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	rc = qti_charger_read(chg, OEM_PROP_TCMD_CURRENT_BATTID,
+			(u32*)batt_id, sizeof(batt_id));
+	if (rc) {
+		pr_err("QTI: qti read current battid failed, rc = %d\n", rc);
+	}
+	batt_id[sizeof(batt_id) - 1] = '\0';
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%s\n", batt_id);
+}
+static DEVICE_ATTR(tcmd_current_battid, S_IRUGO, tcmd_current_battid_show, NULL);
+
+static ssize_t batt_id_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	int battsn_nums = 0, count = 0, i = 0;
+	int rc;
+
+	struct qti_charger *chg = dev_get_drvdata(dev);
+	struct profile_sn_map {
+		const char *id;
+		const char *sn;
+	} *map_table;
+
+	battsn_nums = of_property_count_strings(chg->dev->of_node, "profile-ids-map");
+	if (battsn_nums <= 0 || (battsn_nums % 2)) {
+		mmi_err(chg, "Invalid profile-ids-map in DT, rc=%d\n", battsn_nums);
+		return -EINVAL;
+	}
+
+	map_table = devm_kmalloc_array(chg->dev, battsn_nums / 2,
+					sizeof(struct profile_sn_map),
+					GFP_KERNEL);
+	if (!map_table)
+		return -ENOMEM;
+
+	rc = of_property_read_string_array(chg->dev->of_node, "profile-ids-map",
+					(const char **)map_table,
+					battsn_nums);
+	if (rc < 0) {
+		mmi_err(chg, "Failed to get profile-ids-map, rc=%d\n", rc);
+		goto free_map;
+	}
+
+	count += scnprintf(buf+count, CHG_SHOW_MAX_SIZE, "%d", battsn_nums / 2);
+
+	for (i = 0; i < battsn_nums / 2 && map_table[i].sn; i++) {
+		count += scnprintf(buf+count, CHG_SHOW_MAX_SIZE,
+				"%s", map_table[i].sn);
+	}
+	count += scnprintf(buf+count, CHG_SHOW_MAX_SIZE, "\n");
+
+free_map:
+	devm_kfree(chg->dev, map_table);
+
+	return count;
+}
+
+static DEVICE_ATTR_RO(batt_id);
+
 static ssize_t addr_store(struct device *dev,
 					   struct device_attribute *attr,
 					   const char *buf, size_t count)
@@ -794,14 +899,23 @@ static ssize_t cid_status_show(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
 {
+	int rc;
 	struct qti_charger *chg = this_chip;
+	struct usb_info usb_info = {0};
 
 	if (!chg) {
 		pr_err("QTI: chip not valid\n");
 		return -ENODEV;
 	}
+	chg->usb_info.cid_st = -1;
 
-	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", chg->lpd_info.lpd_cid);
+	rc = qti_charger_read(chg, OEM_PROP_USB_INFO,
+			&usb_info, sizeof(usb_info));
+	if (!rc) {
+		chg->usb_info = usb_info;
+	}
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", chg->usb_info.cid_st);
 }
 static DEVICE_ATTR(cid_status, S_IRUGO, cid_status_show, NULL);
 
@@ -824,10 +938,7 @@ static ssize_t typec_reset_store(struct device *dev,
 		return -EINVAL;
 	}
 
-	if (reset)
-		mmi_warn(chg, "typec_reset triggered\n");
-	else
-		return count;
+	mmi_warn(chg, "typec_reset triggered:%d\n", reset);
 
 	r = qti_charger_write(chg, OEM_PROP_TYPEC_RESET,
 			&reset,
@@ -1065,7 +1176,7 @@ static bool mmi_is_factory_version(void)
 	return factory_version;
 }
 
-static int qti_charger_init(struct qti_charger *chg)
+static int qti_charger_parameters_init(struct qti_charger *chg)
 {
 	int rc;
 	u32 value;
@@ -1113,7 +1224,20 @@ static int qti_charger_init(struct qti_charger *chg)
 		mmi_err(chg, "Fail to get HW revision\n");
 	}
 
-	chg->lpd_info.lpd_cid = -1;
+	chg->usb_info.cid_st = -1;
+
+	return rc;
+}
+
+static int qti_charger_init(struct qti_charger *chg)
+{
+	int rc;
+
+	rc = qti_charger_parameters_init(chg);
+	if (rc) {
+		mmi_err(chg,
+			   "qti_charger_parameters_init failed\n");
+	}
 
 	rc = device_create_file(chg->dev,
 				&dev_attr_tcmd);
@@ -1165,6 +1289,13 @@ static int qti_charger_init(struct qti_charger *chg)
 	}
 
 	rc = device_create_file(chg->dev,
+				&dev_attr_wireless_fw_ver);
+	if (rc) {
+		mmi_err(chg,
+			   "Couldn't create wireless_fw_ver\n");
+	}
+
+	rc = device_create_file(chg->dev,
 				&dev_attr_addr);
 	if (rc) {
 		mmi_err(chg,
@@ -1177,6 +1308,20 @@ static int qti_charger_init(struct qti_charger *chg)
 		mmi_err(chg,
 			   "Couldn't create data\n");
 	}
+
+	rc = device_create_file(chg->dev,
+				&dev_attr_batt_id);
+	if (rc) {
+		mmi_err(chg,
+			   "Couldn't create batt_id\n");
+	}
+
+	rc = device_create_file(chg->dev,
+                                &dev_attr_tcmd_current_battid);
+        if (rc) {
+                mmi_err(chg,
+                           "Couldn't create tcmd_current_battid\n");
+        }
 
 	rc = device_create_file(chg->dev,
 				&dev_attr_cid_status);
@@ -1219,6 +1364,7 @@ static void qti_charger_deinit(struct qti_charger *chg)
 	device_remove_file(chg->dev, &dev_attr_fg_operation);
 	device_remove_file(chg->dev, &dev_attr_typec_reset);
 	device_remove_file(chg->dev, &dev_attr_cid_status);
+	device_remove_file(chg->dev, &dev_attr_tcmd_current_battid);
 	device_remove_file(chg->dev, &dev_attr_tcmd);
 	device_remove_file(chg->dev, &dev_attr_force_pmic_icl);
 	device_remove_file(chg->dev, &dev_attr_force_wls_en);
@@ -1226,6 +1372,7 @@ static void qti_charger_deinit(struct qti_charger *chg)
 	device_remove_file(chg->dev, &dev_attr_force_wls_volt_max);
 	device_remove_file(chg->dev, &dev_attr_force_wls_curr_max);
 	device_remove_file(chg->dev, &dev_attr_wireless_chip_id);
+	device_remove_file(chg->dev, &dev_attr_batt_id);
 	device_remove_file(chg->dev, &dev_attr_addr);
 	device_remove_file(chg->dev, &dev_attr_data);
 }
@@ -1235,10 +1382,18 @@ static void qti_charger_setup_work(struct work_struct *work)
 	struct qti_charger *chg = container_of(work,
 				struct qti_charger, setup_work);
 	enum pmic_glink_state state;
+	unsigned long notification;
+	struct qti_charger_notify_data notify_data;
 
 	state = atomic_read(&chg->state);
 	if (state == PMIC_GLINK_STATE_UP) {
 		mmi_info(chg, "ADSP glink state is up\n");
+		qti_charger_parameters_init(chg);
+		notification = PMIC_GLINK_STATE_UP;
+		notify_data.receiver = OEM_NOTIFY_RECEIVER_MMI_CHG;
+		blocking_notifier_call_chain(&qti_chg_notifier_list,
+				notification,
+				&notify_data);
 	} else if (state == PMIC_GLINK_STATE_DOWN) {
 		mmi_err(chg, "ADSP glink state is down\n");
 	}

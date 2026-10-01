@@ -20,10 +20,13 @@
  * software for any purpose without first obtaining a commercial license from
  * Qorvo. Please contact Qorvo to inquire about licensing terms.
  */
+#include <linux/delay.h>
+#include <linux/errno.h>
+#include <linux/gpio/consumer.h>
+#include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/delay.h>
-#include <linux/interrupt.h>
+#include <linux/wait.h>
 
 #include "qm35_hsspi.h"
 #include "qm35_spi.h"
@@ -33,6 +36,8 @@
 #include "qm35_transport.h"
 
 #define QM35_COREDUMP_IN_PROGRESS 100
+
+#if IS_ENABLED(CONFIG_QM35_FLASHING)
 
 #ifndef CONFIG_QM35_FIRMWARE_DIR
 #define CONFIG_QM35_FIRMWARE_DIR "qorvo/"
@@ -60,6 +65,35 @@ static const char *const qm35_default_fw_list[] = {
 };
 /* clang-format on */
 
+#endif
+
+/**
+ * info_read() - Read received device info.
+ * @filp: The struct file instance.
+ * @kobp: Device kernel object associated.
+ * @bin_attr: Pointer to written binary attribute.
+ * @buf: Pointer to application buffer.
+ * @pos: Offset pointer.
+ * @count: Buffer size.
+ *
+ * Returns: Written size.
+ */
+static ssize_t info_read(struct file *filp, struct kobject *kobp,
+			 struct bin_attribute *bin_attr, char *buf, loff_t pos,
+			 size_t count)
+{
+	struct qm35_spi *qmspi =
+		container_of(bin_attr, struct qm35_spi, info_bin_attr);
+	int ret;
+
+	mutex_lock(&qmspi->info_mutex);
+	ret = memory_read_from_buffer(buf, count, &pos, &qmspi->infobuf,
+				      qmspi->len_infobuf);
+	mutex_unlock(&qmspi->info_mutex);
+
+	return ret;
+}
+
 /*
  * QM35 SPI transport implementation
  */
@@ -86,8 +120,8 @@ static int qm35_spi_start(struct qm35 *qm35)
 
 	if (!try_module_get(THIS_MODULE)) {
 		rc = -ENODEV;
-		dev_err(dev, "Fail to increase refcnt for %s module! (%d)\n",
-			THIS_MODULE->name, module_refcount(THIS_MODULE));
+		dev_err(dev, "Fail to increase refcnt for %s module!\n",
+			THIS_MODULE->name);
 		goto error;
 	}
 
@@ -237,13 +271,23 @@ int qm35_spi_reset_wait_ready(struct qm35_spi *qmspi, bool bootrom, bool wait)
 		usleep_range(QM35_RESET_DURATION_US,
 			     QM35_RESET_DURATION_US + 100);
 		gpiod_set_value_cansleep(qmspi->reset_gpio, 0);
-		/* Ensure minimum reset backoff duration, as the chip takes some
-		 * time to exit reset state. */
-		usleep_range(QM35_RESET_BACKOFF_DURATION_US,
-			     2 * QM35_RESET_BACKOFF_DURATION_US);
-		if (bootrom)
+		if (!bootrom) {
+			/* Ensure minimum reset backoff duration, as the chip
+			 * takes some time to exit reset state. */
+			usleep_range(QM35_RESET_BACKOFF_DURATION_US,
+				     2 * QM35_RESET_BACKOFF_DURATION_US);
+		} else {
+			/* Ensure bootrom-specific minimum reset backoff
+			 * duration, as the chip takes some time to exit reset
+			 * state and initialize its crypto IP, and only reads
+			 * the boot selection pins afterwards. */
+			usleep_range(
+				QM35_BOOTROM_RESET_BACKOFF_DURATION_US,
+				2 * QM35_BOOTROM_RESET_BACKOFF_DURATION_US);
+
 			/* Reset CS level after reset to bootrom. */
 			qm35_spi_set_cs_level(qmspi, 1);
+		}
 		/* Reset qm35_state. */
 		qmspi->base.state = QM35_STATE_UNKNOWN;
 	}
@@ -285,6 +329,8 @@ static int qm35_spi_reset(struct qm35 *qm35, bool bootrom)
 	return qm35_spi_reset_wait_ready(qmspi, bootrom, !bootrom);
 }
 
+#if IS_ENABLED(CONFIG_QM35_FLASHING)
+
 /**
  * qm35_spi_fw_update_single() - Attempt flashing a single firmware file.
  * @qm35: QM35 core instance to update.
@@ -315,12 +361,11 @@ static int qm35_spi_fw_update_single(struct qm35 *qm35,
 
 	/* Get the version of qm35 firmware on the filesystem. */
 	if (!qm35_fw_get_vendor_version(qmspi, &fw_ver)) {
-		qm35_fw_version_print(dev_info, &qmspi->spi->dev,
+		qm35_fw_version_print(dev_info, qm35->dev,
 				      "Loaded firmware version", &fw_ver);
 		fw_version_found = true;
 	} else {
-		dev_info(&qmspi->spi->dev,
-			 "Loaded firmware version not found%s\n",
+		dev_info(qm35->dev, "Loaded firmware version not found%s\n",
 			 force ? "" : ", no firmware upgrade");
 	}
 
@@ -332,7 +377,7 @@ static int qm35_spi_fw_update_single(struct qm35 *qm35,
 			run_fw_upgrade = true;
 		} else {
 			dev_info(
-				&qmspi->spi->dev,
+				qm35->dev,
 				"Currently running firmware version and loaded firmware "
 				"version are identical, no firmware upgrade\n");
 			/* In this case, returning without flashing is considered a success
@@ -362,6 +407,8 @@ error:
 	return rc;
 }
 
+#endif
+
 /**
  * qm35_spi_fw_update() - QM35 transport firmware update callback.
  * @qm35: QM35 core instance to update.
@@ -382,6 +429,7 @@ static int qm35_spi_fw_update(struct qm35 *qm35,
 			      struct qm35_fw_version *current_ver,
 			      u16 device_id, const char *fw_name)
 {
+#if IS_ENABLED(CONFIG_QM35_FLASHING)
 	struct qm35_spi *qmspi = qm35_to_qm35_spi(qm35);
 	bool force = false;
 	int rc = 1;
@@ -396,7 +444,7 @@ static int qm35_spi_fw_update(struct qm35 *qm35,
 
 	if (qm35_debug_flags & QMSPI_NO_FW_UPDATE) {
 		dev_info(
-			&qmspi->spi->dev,
+			qm35->dev,
 			"Firmware upgrade disabled by debug_flags module parameter\n");
 		goto error;
 	}
@@ -410,16 +458,16 @@ static int qm35_spi_fw_update(struct qm35 *qm35,
 		else
 			force_cause = "firmware version not available";
 
-		dev_warn(&qmspi->spi->dev, "Firmware upgrade triggered by %s\n",
+		dev_warn(qm35->dev, "Firmware upgrade triggered by %s\n",
 			 force_cause);
 	}
 
-	if (fw_name) {
+	if (fw_name && fw_name[0]) {
 		/* If fw_name was passed as an argument, use it. */
 		rc = qm35_spi_fw_update_single(qm35, current_ver, fw_name,
 					       force);
 	} else if (!sysfs_streq(qm35_fw_name, "")) {
-		/* Else, use qm35_fw_name is set to a non-empty string. */
+		/* Else, use qm35_fw_name if set to a non-empty string. */
 		rc = qm35_spi_fw_update_single(qm35, current_ver, qm35_fw_name,
 					       force);
 	} else {
@@ -466,6 +514,11 @@ error:
 	mutex_unlock(&qmspi->fw.update_lock);
 	trace_qm35_spi_fw_update_return(qmspi, rc);
 	return rc;
+#else
+	dev_warn(qm35->dev, "Firmware upgrade disabled at built time. "
+			    "Use qm-flashing tool.\n");
+	return 0;
+#endif
 }
 
 /**
@@ -513,14 +566,16 @@ static int qm35_send_work(struct qm35_spi *qmspi, const void *in, void *out)
 	int ret;
 
 	/* Ensure the device is wake-up. */
-	qm35_hsspi_wakeup(qmspi, params->wakeup);
+	ret = qm35_hsspi_wakeup(qmspi, params->wakeup);
+	if (ret == -EINPROGRESS)
+		return ret; /* Async wakeup activated. */
 	/* If queued send already made by qm35_recv_job(), return known result. */
 	if ((qm35_debug_flags & QMSPI_COMBINED_WRITE) &&
 	    !atomic_read(&qmspi->should_write))
 		return qmspi->work_send.ret;
 	/* Direct cast of type because enum match expected ul_value. */
 	ret = qm35_hsspi_send(qmspi, (u8)params->type, params->data_out,
-			      params->size, atomic_read(&qmspi->should_read));
+			      params->size);
 	if (!ret && (qm35_debug_flags & QMSPI_COMBINED_WRITE))
 		atomic_set(&qmspi->should_write, false);
 	return ret;
@@ -554,6 +609,7 @@ static int qm35_spi_send(struct qm35 *qm35, enum qm35_transport_msg_type type,
 		.size = size,
 		.wakeup = false,
 	};
+	bool wakeup_forced = false;
 	int retry_count = QM35_HSSPI_RETRY_COUNT;
 	int retry_udelay = QM35_HSSPI_RETRY_DELAY_US;
 	int ret;
@@ -579,12 +635,34 @@ static int qm35_spi_send(struct qm35 *qm35, enum qm35_transport_msg_type type,
 	while ((ret == -EAGAIN || ret == -EBUSY) && retry_count--) {
 		usleep_range(retry_udelay, 2 * retry_udelay);
 		retry_udelay *= 2;
-		/* Update send params to force wakeup if needed. */
-		qmspi->send_params.wakeup = (ret == -EBUSY) &&
-					    !qmspi->exton_gpio;
+		if (!qmspi->exton_gpio) {
+			qmspi->send_params.wakeup = false;
+			/* Update send params to force wakeup if needed. */
+			if (ret == -EBUSY && !wakeup_forced) {
+				qmspi->send_params.wakeup = true;
+				wakeup_forced = true;
+				/* If the chip is sleeping on last retry, retry
+				 * once more. */
+				retry_count = !retry_count ? 1 : retry_count;
+			}
+		}
 		ret = qm35_enqueue(qmspi, &qmspi->work_send);
+		if (ret == -EINPROGRESS) {
+			/* Async wakeup in progress, wait IRQ from outside
+			 * high-prio thread. If QMSPI_COMBINED_WRITE is set,
+			 * the packet will be sent while reading the AWAKE
+			 * packet. */
+			ret = wait_event_interruptible_hrtimeout(
+				qmspi->wakeup_wait, qmspi->wakeup_event,
+				ns_to_ktime(QM35_WAKEUP_DELAY_US * 2000));
+			trace_qm35_spi_send_awake(qmspi, ret);
+			/* If async wakeup used, don't count last try as a try. */
+			retry_count++;
+			/* Ensure no forced wakeup for next call. */
+			ret = -EAGAIN;
+		}
 	}
-	if (!retry_count && (qm35_debug_flags & QMSPI_COMBINED_WRITE))
+	if (ret && (qm35_debug_flags & QMSPI_COMBINED_WRITE))
 		atomic_set(&qmspi->should_write, false);
 	/* Request auto-suspend in all cases. */
 	qm35_spi_pm_idle(qmspi);
@@ -623,7 +701,7 @@ static int qm35_recv_work(struct qm35_spi *qmspi, const void *in, void *out)
 		return ret;
 	params->type = (enum qm35_transport_msg_type)header.ul_value;
 	params->flags = (int)header.flags;
-	return (int)header.length;
+	return ret;
 }
 
 /**
@@ -721,6 +799,7 @@ error:
 static int qm35_spi_probe(struct qm35 *qm35, char *infobuf, size_t len)
 {
 	struct qm35_spi *qmspi = qm35_to_qm35_spi(qm35);
+	struct device *dev = qm35->dev;
 	bool soft_reset_sent = false;
 	int rc;
 
@@ -744,8 +823,37 @@ static int qm35_spi_probe(struct qm35 *qm35, char *infobuf, size_t len)
 			goto cleanup_probe;
 		soft_reset_sent = true;
 	}
+
 	rc = qm35_uci_probe_device_info(
 		qmspi, (struct qm35_uci_device_info *)infobuf, len);
+	if (rc)
+		goto cleanup_probe;
+
+	mutex_lock(&qmspi->info_mutex);
+	/* Save info */
+	qmspi->len_infobuf = min(
+		sizeof(qmspi->infobuf),
+		sizeof(struct qm35_uci_device_info) +
+			((struct qm35_uci_device_info *)infobuf)->vendor_length);
+	memcpy(&qmspi->infobuf, infobuf, qmspi->len_infobuf);
+	/* Remove sysfs control file. */
+	if (qmspi->info_bin_attr.attr.name)
+		sysfs_remove_bin_file(&dev->kobj, &qmspi->info_bin_attr);
+	/* Create info file. */
+	sysfs_bin_attr_init(&qmspi->info_bin_attr);
+	qmspi->info_bin_attr.size = qmspi->len_infobuf;
+	qmspi->info_bin_attr.read = info_read;
+	qmspi->info_bin_attr.attr.mode = 0444; /* RO */
+	qmspi->info_bin_attr.attr.name = "fwinfo";
+	rc = sysfs_create_bin_file(&dev->kobj, &qmspi->info_bin_attr);
+	if (rc) {
+		dev_warn(dev,
+			 "Cannot create fwinfo file with probed data. (%d)\n",
+			 rc);
+		qmspi->info_bin_attr.attr.name = NULL;
+		rc = 0; /* Ignore this error. */
+	}
+	mutex_unlock(&qmspi->info_mutex);
 
 cleanup_probe:
 	qm35_uci_probe_cleanup(qmspi);

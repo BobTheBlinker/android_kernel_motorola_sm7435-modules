@@ -10400,7 +10400,7 @@ static void pt_enum_work_function(struct work_struct *work)
 
 #if defined(CONFIG_PM_RUNTIME) || defined(KERNEL_VER_GT_3_19)
 /* CONFIG_PM_RUNTIME option is removed in 3.19.0 */
-#if defined(CONFIG_PM_SLEEP)
+#if 0
 /*******************************************************************************
  * FUNCTION: pt_core_rt_suspend
  *
@@ -10479,7 +10479,7 @@ static int pt_core_rt_resume(struct device *dev)
 #endif /* CONFIG_PM_SLEEP */
 #endif /* CONFIG_PM_RUNTIME || LINUX_VERSION_CODE */
 
-#if defined(CONFIG_PM_SLEEP)
+#if 0
 /*******************************************************************************
  * FUNCTION: pt_core_suspend_
  *
@@ -10665,14 +10665,14 @@ static int pt_pm_notifier(struct notifier_block *nb,
 	return NOTIFY_DONE;
 }
 #endif
-
+#if 0
 const struct dev_pm_ops pt_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(pt_core_suspend, pt_core_resume)
 	SET_RUNTIME_PM_OPS(pt_core_rt_suspend, pt_core_rt_resume,
 			NULL)
 };
 EXPORT_SYMBOL_GPL(pt_pm_ops);
-
+#endif
 /*******************************************************************************
  * FUNCTION: _pt_request_pip2_enter_bl
  *
@@ -12331,7 +12331,7 @@ static int fb_notifier_callback(struct notifier_block *self,
 		pt_debug(cd->dev, DL_INFO, "%s: UNBLANK!\n", __func__);
 		if (cd->fb_state != FB_ON) {
 			call_atten_cb(cd, PT_ATTEN_RESUME, 0);
-#if defined(CONFIG_PM_SLEEP)
+#if 0
 			if (cd->cpdata->flags & PT_CORE_FLAG_SKIP_RUNTIME)
 				pt_core_resume_(cd->dev);
 #endif
@@ -12340,7 +12340,7 @@ static int fb_notifier_callback(struct notifier_block *self,
 	} else if (*blank == FB_BLANK_POWERDOWN) {
 		pt_debug(cd->dev, DL_INFO, "%s: POWERDOWN!\n", __func__);
 		if (cd->fb_state != FB_OFF) {
-#if defined(CONFIG_PM_SLEEP)
+#if 0
 			if (cd->cpdata->flags & PT_CORE_FLAG_SKIP_RUNTIME)
 				pt_core_suspend_(cd->dev);
 #endif
@@ -12409,7 +12409,7 @@ static int fb_notifier_callback(struct notifier_block *self,
 			cypsoc_picoleaf_resume(cd->cypsoc_picoleaf_data);
 #endif
 			call_atten_cb(cd, PT_ATTEN_RESUME, 0);
-#if defined(CONFIG_PM_SLEEP)
+#if 0
 			if (cd->cpdata->flags & PT_CORE_FLAG_SKIP_RUNTIME)
 				pt_core_resume_(cd->dev);
 #endif
@@ -12427,7 +12427,7 @@ static int fb_notifier_callback(struct notifier_block *self,
 #ifdef CYPSOC_PICOLEAF_ENABLE
 			cypsoc_picoleaf_suspend(cd->cypsoc_picoleaf_data);
 #endif
-#if defined(CONFIG_PM_SLEEP)
+#if 0
 			if (cd->cpdata->flags & PT_CORE_FLAG_SKIP_RUNTIME)
 				pt_core_suspend_(cd->dev);
 #endif
@@ -17072,72 +17072,25 @@ static void remove_sysfs_and_modules(struct device *dev)
  * PARAMETERS: void
  *
  ******************************************************************************/
-static int cypsoc_picoleaf_force_power_on_hw(struct pt_core_platform_data *cpdata)
+int cypsoc_picoleaf_force_power_on_hw(struct cypsoc_picoleaf_data *cpdata)
 {
 	int rc = 0;
 	const int gpio_low  = 0;
 	const int gpio_high = 1;
 
-	pr_info("%s: lsy Enable PSoC power: VDD, VREF\n", __func__);
+	pr_info("%s: Enable PSoC power: VDD, VREF\n", __func__);
 
-	cpdata->pico_rst_gpio = 476;
+	cpdata->rst_gpio = 476;
 
 	// Reset GPIO set HIGH
-	if (!cpdata->pico_rst_gpio) return -1;
-	gpio_set_value(cpdata->pico_rst_gpio, gpio_high);
-
-	// VDD GPIO
-	if(cpdata->pico_vdd_gpio){
-		rc = gpio_request(cpdata->pico_vdd_gpio, NULL);
-		if (rc < 0) {
-			gpio_free(cpdata->pico_vdd_gpio);
-			rc = gpio_request(cpdata->pico_vdd_gpio, NULL);
-		}
-		if (rc < 0) {
-			pr_err("%s: Failed requesting VDD GPIO %d; rc=%d\n",
-					__func__,
-					cpdata->pico_vdd_gpio,
-					rc);
-		}
-
-		rc = gpio_direction_output(cpdata->pico_vdd_gpio, gpio_high);
-		if (rc){
-			pr_err("%s: setcfg for VDD GPIO %d failed; rc=%d\n",
-					__func__,
-					cpdata->pico_vdd_gpio,
-					rc);
-		}
-		gpio_free(cpdata->pico_vdd_gpio);
-	}
-
-	// VREF GPIO
-	// at the same time as VDD
-	if(cpdata->pico_vref_gpio){
-		rc = gpio_request(cpdata->pico_vref_gpio, NULL);
-		if (rc < 0) {
-			gpio_free(cpdata->pico_vref_gpio);
-			rc = gpio_request(cpdata->pico_vref_gpio, NULL);
-		}
-		if (rc < 0) {
-			pr_err("%s: Failed requesting VDD GPIO %d\n",
-					__func__,
-					cpdata->pico_vref_gpio);
-		}
-
-		rc = gpio_direction_output(cpdata->pico_vref_gpio, gpio_high);
-		if (rc){
-			pr_err("%s: setcfg for VDD GPIO %d failed\n",
-					__func__,
-					cpdata->pico_vref_gpio);
-		}
-		gpio_free(cpdata->pico_vref_gpio);
-	}
+	if (!cpdata->rst_gpio) return -1;
+	gpio_set_value(cpdata->rst_gpio, gpio_high);
 
 	// 1ms
 	usleep_range(1000, 2000);
 
 	// Reset GPIO set LOW
-	gpio_set_value(cpdata->pico_rst_gpio, gpio_low);
+	gpio_set_value(cpdata->rst_gpio, gpio_low);
 
 	// 150ms; wait for firmware to wake up //
 	usleep_range(150000, 160000);
@@ -17370,12 +17323,6 @@ int pt_probe(const struct pt_bus_ops *ops, struct device *dev,
 		pt_debug(cd->dev, DL_ERROR, "%s: HW Init fail r=%d\n",
 			__func__, rc);
 	}
-
-	//////////////////////////////////////////////////////
-	/// Power on Cypress PSoC
-	/// A touch driver of KIKU must invoke this function
-	/// otherwise I2C connetion is failed.
-	(void) cypsoc_picoleaf_force_power_on_hw(cd->cpdata);
 
 	/* Power on any needed regulator(s) */
 	if (cd->cpdata->setup_power) {

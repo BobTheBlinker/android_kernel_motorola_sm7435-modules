@@ -1,9 +1,9 @@
 # add -Wall to try to catch everything we can.
 EXTRA_CFLAGS += -Wall
-EXTRA_CFLAGS += -I$(KERNEL_SRC)/../sm7435-modules/motorola/include \
-		-I$(KERNEL_SRC)/../sm7435-modules/motorola/drivers/input/touchscreen/focaltech_v2_mmi \
-		-I$(KERNEL_SRC)/../sm7435-modules/motorola/drivers/input/touchscreen/focaltech_v2_mmi/include \
-		-I$(KERNEL_SRC)/../sm7435-modules/motorola/drivers/input/touchscreen/focaltech_v2_mmi/focaltech_test
+EXTRA_CFLAGS += -I$(ANDROID_BUILD_TOP)/motorola/kernel/modules/include \
+		-I$(ANDROID_BUILD_TOP)/motorola/kernel/modules/drivers/input/touchscreen/focaltech_v2_mmi \
+		-I$(ANDROID_BUILD_TOP)/motorola/kernel/modules/drivers/input/touchscreen/focaltech_v2_mmi/include \
+		-I$(ANDROID_BUILD_TOP)/motorola/kernel/modules/drivers/input/touchscreen/focaltech_v2_mmi/focaltech_test
 
 obj-m := focaltech_v2_mmi.o
 focaltech_v2_mmi-objs += focaltech_core.o
@@ -40,6 +40,9 @@ endif
 ifneq ($(filter m y, $(PICOLEAF_DATA_FOR_TOUCH)),)
 	EXTRA_CFLAGS += -DPICOLEAF_DATA_EN
 endif
+ifneq ($(filter m y, $(NDT_DATA_FOR_TOUCH)),)
+	EXTRA_CFLAGS += -DNDT_DATA_EN
+endif
 ifneq ($(filter m y,$(CONFIG_INPUT_FOCALTECH_MMI_PEN_NOTIFIER)),)
 	KBUILD_EXTRA_SYMBOLS += $(CURDIR)/$(KBUILD_EXTMOD)/../../../misc/pen/Module.symvers
 	EXTRA_CFLAGS += -DFOCALTECH_PEN_NOTIFIER
@@ -49,8 +52,16 @@ ifneq ($(filter m y, $(CONFIG_DRM_PANEL_EVENT_NOTIFICATIONS)),)
 	EXTRA_CFLAGS += -DCONFIG_DRM_PANEL_EVENT_NOTIFICATIONS
 endif
 
+ifneq ($(filter m y,$(CONFIG_ENABLE_FTS_PALM_CANCEL)),)
+    EXTRA_CFLAGS += -DCONFIG_ENABLE_FTS_PALM_CANCEL
+endif
+
+ifneq ($(filter m y,$(CONFIG_ENABLE_RESOLITION_BOOST)),)
+    EXTRA_CFLAGS += -DCONFIG_ENABLE_RESOLITION_BOOST
+endif
+
 ifneq ($(filter m y, $(CONFIG_DRM_PANEL_NOTIFICATIONS)),)
 	EXTRA_CFLAGS += -DCONFIG_DRM_PANEL_NOTIFICATIONS
 endif
-KBUILD_EXTRA_SYMBOLS += $(OUT_DIR)/Module.symvers
+KBUILD_EXTRA_SYMBOLS += $(CURDIR)/../../kernel/msm-$(MODULE_KERNEL_VERSION)/Module.symvers
 KBUILD_EXTRA_SYMBOLS += $(CURDIR)/$(KBUILD_EXTMOD)/../../../mmi_info/$(GKI_OBJ_MODULE_DIR)/Module.symvers

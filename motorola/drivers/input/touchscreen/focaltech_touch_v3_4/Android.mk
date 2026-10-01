@@ -1,7 +1,7 @@
 DLKM_DIR := motorola/kernel/modules
 LOCAL_PATH := $(call my-dir)
 
-ifeq ($(call is-board-platform-in-list,taro kalama parrot blair), true)
+ifeq ($(call is-board-platform-in-list,taro kalama parrot blair sun), true)
 
 ifneq ($(FOCALTECH_TOUCH_IC_NAME),)
 	KBUILD_OPTIONS += CONFIG_INPUT_FOCAL_IC_NAME=$(FOCALTECH_TOUCH_IC_NAME)
@@ -68,8 +68,20 @@ ifeq ($(FTS_INPUT_ID),true)
 	KBUILD_OPTIONS += CONFIG_FTS_INPUT_ID=y
 endif
 
+ifeq ($(FTS_GAME_MODE_EN),true)
+	KBUILD_OPTIONS += CONFIG_FTS_GAME_MODE_EN=y
+endif
+
 ifeq ($(FOCALTECH_REPORT_PRESSURE_DISABLE),true)
 	KBUILD_OPTIONS += CONFIG_FOCALTECH_REPORT_PRESSURE_DISABLE=y
+endif
+
+ifeq ($(BUILD_FOR_ANDROID_V),true)
+	KBUILD_OPTIONS += CONFIG_BUILD_FOR_ANDROID_V=y
+endif
+
+ifeq ($(TOUCH_HARDWARE_STATUS),true)
+	KBUILD_OPTIONS += CONFIG_TOUCH_HARDWARE_STATUS=y
 endif
 
 else
@@ -125,6 +137,10 @@ endif
 
 endif
 
+ifeq ($(ENABLE_GTP_PALM_CANCEL),true)
+    KBUILD_OPTIONS += CONFIG_ENABLE_FTS_PALM_CANCEL=y
+endif
+
 include $(CLEAR_VARS)
 LOCAL_MODULE := focaltech_v3_4.ko
 LOCAL_MODULE_TAGS := optional
@@ -135,5 +151,7 @@ ifneq ($(findstring touchscreen_mmi.ko,$(BOARD_VENDOR_KERNEL_MODULES)),)
 endif
 
 KBUILD_OPTIONS_GKI += GKI_OBJ_MODULE_DIR=gki
+ifneq ($(BUILD_FOR_ANDROID_V),true)
 KBUILD_OPTIONS_GKI += MODULE_KERNEL_VERSION=$(TARGET_KERNEL_VERSION)
+endif
 include $(DLKM_DIR)/AndroidKernelModule.mk

@@ -30,6 +30,9 @@ struct qm35_spi;
 #define QM35_HSSPI_RETRY_COUNT 3
 #define QM35_HSSPI_RETRY_DELAY_US 50
 
+#define QM35_WAKEUP_DURATION_US 500
+#define QM35_WAKEUP_DELAY_US 3000
+
 /* See peg_spi_driver/HSSPI.{c,h} at
    https://gitlab.com/qorvo/uwb-eng/qm35xxx-pegasus/drivers/peg_spi_driver */
 
@@ -56,7 +59,9 @@ enum hsspi_ul_value {
 	UL_BOOT_FLASH,
 	UL_UCI_APP,
 	UL_COREDUMP,
-	UL_LOG
+	UL_LOG,
+	UL_QTRACE,
+	UL_AWAKE
 };
 
 /**
@@ -72,7 +77,7 @@ struct qm35_hsspi_header {
 } __packed;
 
 int qm35_hsspi_send(struct qm35_spi *qmspi, u8 ul_value, const void *data,
-		    size_t length, bool do_prd);
+		    size_t length);
 int qm35_hsspi_recv(struct qm35_spi *qmspi, struct qm35_hsspi_header *header,
 		    void *data, size_t size);
 int qm35_hsspi_wakeup(struct qm35_spi *qmspi, bool force);

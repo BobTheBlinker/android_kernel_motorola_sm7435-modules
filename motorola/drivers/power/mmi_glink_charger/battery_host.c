@@ -150,10 +150,10 @@ static DEVICE_ATTR(manufacturing_date, 0644, manufacturing_date_show, manufactur
 
 static struct attribute * mmi_g[] = {
 	&dev_attr_charge_rate.attr,
-	&dev_attr_age.attr,
 	&dev_attr_state_of_health.attr,
 	&dev_attr_manufacturing_date.attr,
 	&dev_attr_first_usage_date.attr,
+	&dev_attr_age.attr,
 	NULL,
 };
 
@@ -444,6 +444,20 @@ static ssize_t force_charging_disable_store(struct device *dev,
 static DEVICE_ATTR(force_charging_disable, 0200,
 		NULL,
 		force_charging_disable_store);
+
+static ssize_t charge_real_type_show(struct device *dev,
+		struct device_attribute *attr,
+		char *buf)
+{
+	if (!this_root_chip) {
+		pr_err("mmi_glink_charger: chip is invalid\n");
+		return -ENODEV;
+	}
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n",
+			 this_root_chip->real_charger_type);
+}
+static DEVICE_ATTR(charge_real_type, S_IRUGO, charge_real_type_show, NULL);
 
 static ssize_t thermal_primary_charge_control_limit_store(struct device *dev,
 		struct device_attribute *attr,
@@ -815,6 +829,10 @@ void battery_supply_init(struct battery_host *batt_host)
 	if (rc)
 		mmi_err(this_root_chip, "couldn't create force_charging_disable\n");
 
+	rc = device_create_file(&batt_psy->dev,
+				&dev_attr_charge_real_type);
+	if (rc)
+		mmi_err(this_root_chip, "couldn't create charge_real_type\n");
 	mmi_info(this_root_chip, "battery supply is initialized\n");
 
 	thermal_charge_control_init(batt_host);
@@ -845,6 +863,8 @@ void battery_supply_deinit(struct battery_host *batt_host)
 					&dev_attr_force_charging_enable);
 		device_remove_file(batt_psy->dev.parent,
 					&dev_attr_force_charging_disable);
+		device_remove_file(&batt_psy->dev,
+					&dev_attr_charge_real_type);
 		sysfs_remove_group(&batt_psy->dev.kobj,
 					&power_supply_mmi_attr_group);
 		power_supply_put(batt_psy);
@@ -866,6 +886,11 @@ static int battery_host_parse_dt(struct mmi_glink_chip *chip, struct battery_hos
 	if (rc)
 		batt_host->max_fcc_ua = 4000;
 	batt_host->max_fcc_ua *= 1000;
+
+	rc = of_property_read_u32(node, "mmi,chrg-iterm-ma",
+				  &batt_host->chrg_iterm_ma);
+	if (rc)
+		batt_host->chrg_iterm_ma = 300;
 
 	rc = of_property_read_u32(node, "mmi,demo-fv-mv",
 				  &batt_host->demo_fv_mv);

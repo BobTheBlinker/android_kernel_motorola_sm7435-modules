@@ -27,6 +27,7 @@
 #include <linux/pagewalk.h>
 #include <linux/types.h>
 #include <asm/pgalloc.h>
+#include <asm/pgtable-hwdef.h>
 #include <mm/pgalloc-track.h>
 #include <trace/hooks/fault.h>
 #include <trace/hooks/vendor_hooks.h>
@@ -34,18 +35,6 @@
 
 #include "patch_lookup_tree.h"
 #include "rkp_hvc_api.h"
-
-/*
- * A critical note on why this is included. After our protections initialize, it
- * becomes impossible to register additional kprobes, and thus any kprobe
- * initialization for testing purposes must be done before this kernel module
- * runs. That means a separate module for testing would involve implementing
- * some (likely file-based) IPC, which is decidedly more ugly than bringing
- * in the needed test code/adding a compile-time hook during development.
- */
-#ifdef ATTACK_TEST
-#include "tests/attack_test.h"
-#endif
 
 /*
  * For determining the offsets of kernel code, rodata, etc.
@@ -106,14 +95,15 @@ static uint64_t register_contiguous_region(uint64_t *size)
  * Return: virtual address of jump entry table on success, 0 on failure
  */
 uint64_t jel_init(uint64_t start_jump_table, uint64_t stop_jump_table,
-	       uint64_t *jel_end, uint64_t c_base_ptr, uint64_t c_sz)
+		  uint64_t *jel_end, uint64_t c_base_ptr, uint64_t c_sz)
 {
 	uint64_t jel_start = 0;
 	uint64_t jel_sz = 0;
 	uint64_t contig_vaddr = 0;
 
 	jel_start = jet_alloc((struct jump_entry *)start_jump_table,
-			      (struct jump_entry *)stop_jump_table, &jel_sz);
+			              (struct jump_entry *)stop_jump_table,
+                          &jel_sz);
 	if (!jel_start) {
 		pr_err("MotoRKP failed to allocate memory for jump table lookup\n");
 		return 0;
@@ -127,11 +117,7 @@ uint64_t jel_init(uint64_t start_jump_table, uint64_t stop_jump_table,
 	memcpy((uint64_t *)contig_vaddr, (void *)jel_start,
 	       jel_sz * sizeof(union jump_tree_node));
 
-	*jel_end = jel_start + jel_sz;
-
-#ifdef ATTACK_TEST
-	printk("MotoRKP: Jump entry lookup table at %llx first val: %llx\n", jel_start, *(uint64_t *)jel_start);
-#endif
+	*jel_end = jel_start + (jel_sz * sizeof(union jump_tree_node));
 
 	return jel_start;
 }
@@ -146,20 +132,15 @@ static int __init mod_init(void)
 {
 	uint64_t jel_vaddr, jel_end, jel_sz; /* jump_entry_lookup */
 	kallsyms_lookup_name_t kallsyms_lookup_name_ind;
-	uint64_t start_jump_table, stop_jump_table, stext, etext, start_rodata,
-		end_rodata;
-	struct mm_struct *mm;
-	uint64_t c_region_size = 0;
+        uint64_t start_jump_table, stop_jump_table, stext, etext, stext_vaddr,
+                etext_vaddr, start_rodata, end_rodata;
+        uint64_t c_region_size = 0;
 	uint64_t c_region_paddr = 0;
 
-#ifdef ATTACK_TEST
-	ATTACK_KERNEL_CODE_DECLS;
-#endif
-
 	/*
-	 * Ensure that this module is never accidentally insmodded before
-	 * kernel memory is mapped in
-	 */
+         * Ensure that this module is never accidentally insmodded before
+         * kernel memory is mapped in
+         */
 	if (!mem_ready) {
 		pr_err("MotoRKP waiting to insmod until kernel memory mapped\n");
 		return -EACCES;
@@ -167,65 +148,66 @@ static int __init mod_init(void)
 
 	pr_info("MotoRKP module loaded!\n");
 
+	/* Locate kernel symbol info through the kprobes */
 	if (register_kprobe(&kp_kallsyms_lookup_name)) {
 		pr_err("MotoRKP failed to register kallsyms kprobe!\n");
 		return -EACCES;
 	}
 	kallsyms_lookup_name_ind =
 		(kallsyms_lookup_name_t)kp_kallsyms_lookup_name.addr;
+
+	/* Get the addresses of everything we need to protect */
+
+	/* 3.0 version will need the vaddrs */
+	stext_vaddr = kallsyms_lookup_name_ind("_stext");
+	etext_vaddr = kallsyms_lookup_name_ind("_etext");
+
+	/* Initialization of paddrs for direct immutability */
 	start_jump_table = kallsyms_lookup_name_ind("__start___jump_table");
 	stop_jump_table = kallsyms_lookup_name_ind("__stop___jump_table");
-	stext = __virt_to_phys(kallsyms_lookup_name_ind("_stext"));
-	etext = __virt_to_phys(kallsyms_lookup_name_ind("_etext"));
+	stext = __virt_to_phys(stext_vaddr);
+	etext = __virt_to_phys(etext_vaddr);
 	start_rodata =
 		__virt_to_phys(kallsyms_lookup_name_ind("__start_rodata"));
 	end_rodata =
 		__virt_to_phys(kallsyms_lookup_name_ind("__hyp_rodata_end"));
-	mm = (struct mm_struct *)kallsyms_lookup_name_ind("init_mm");
+
 	/* If we unregister it later, our own protections will create an exception */
 	unregister_kprobe(&kp_kallsyms_lookup_name);
 
 	/* Register our contiguous memory area with the hypervisor */
-	c_region_paddr =
-		register_contiguous_region(&c_region_size);
+	c_region_paddr = register_contiguous_region(&c_region_size);
 	if (!c_region_paddr) {
 		pr_err("MotoRKP failed to register contiguous vmap!\n");
-		return -EACCES;
+		return -EINVAL;
 	}
 
-	jel_vaddr = jel_init(start_jump_table, stop_jump_table,
-				       &jel_end, c_region_paddr,
-				       c_region_size);
-	if (!jel_vaddr)
+	jel_vaddr = jel_init(start_jump_table, stop_jump_table, &jel_end,
+			     c_region_paddr, c_region_size);
+	if (!jel_vaddr) {
+		pr_err("MotoRKP failed to init the jel!\n");
 		return -EACCES;
+	}
 
 	jel_sz = ((jel_end - jel_vaddr) + PAGE_SIZE) & 0xFFFFFFFFFFFFF000;
 	add_jump_entry_lookup(c_region_paddr, jel_sz);
 	amem_register(c_region_paddr + jel_sz, c_region_size - jel_sz);
-	mark_range_ro_smc(c_region_paddr, c_region_paddr + c_region_size, KERN_PROT_GENERIC);
 
-	/* TODO: lock down page tables */
-	if (PTRS_PER_P4D != 1 || PTRS_PER_PUD != 1) {
+	mark_range_ro_smc(c_region_paddr, c_region_paddr + c_region_size,
+			  KERN_PROT_GENERIC);
+
+	if (CONFIG_PGTABLE_LEVELS != 3) {
 		pr_err("MotoRKP does not support EL1 P4D, PUD page table configurations!\n");
-		return -EACCES;
+		return -EINVAL;
 	}
- 	comm_el1_pt((uint64_t) mm->pgd);
 
 	/* These are guaranteed to be OK at page granularity by bootloader-level
-	 * hugepage splitting */
+         * hugepage splitting */
 	mark_range_ro_smc(stext, etext, KERN_PROT_GENERIC);
 	mark_range_ro_smc(start_rodata, end_rodata, KERN_PROT_GENERIC);
 
+	/* Lock down RKP API to prevent further abuse from guest OS */
 	lock_rkp();
-
-#ifdef ATTACK_TEST
-	if (tc_num == 2)
-		ATTACK_KERNEL_CODE;
-	else if (tc_num == 6)
-		ATTACK_JET(jel_vaddr);
-	else
-		attack();
-#endif
 
 	return 0;
 }

@@ -611,7 +611,7 @@ struct goodix_ts_hw_ops {
 	int (*suspend)(struct goodix_ts_core *cd);
 	int (*gesture)(struct goodix_ts_core *cd, int gesture_type);
 	int (*reset)(struct goodix_ts_core *cd, int delay_ms);
-	int (*irq_enable)(struct goodix_ts_core *cd, bool enable);
+	int (*irq_enable)(struct goodix_ts_core *cd, bool enable, bool en_log);
 	int (*read)(struct goodix_ts_core *cd, unsigned int addr,
 		    unsigned char *data, unsigned int len);
 	int (*write)(struct goodix_ts_core *cd, unsigned int addr,
@@ -790,6 +790,7 @@ struct goodix_ts_core {
 	atomic_t post_suspended;
 	struct delayed_work work;
 	int ts_mmi_power_state;
+	struct spinlock irq_lock;
 };
 
 struct goodix_device_resource {
@@ -809,6 +810,9 @@ struct goodix_device_manager {
 
 extern struct goodix_device_manager goodix_devices;
 extern int goodix_device_register(struct goodix_device_resource *device);
+#ifdef CONFIG_GTP_MANUAL_CS
+extern int cs_gpio;
+#endif
 
 /* log macro */
 extern bool debug_log_flag;

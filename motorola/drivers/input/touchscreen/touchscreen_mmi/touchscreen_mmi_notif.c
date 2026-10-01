@@ -41,11 +41,13 @@ extern struct blocking_notifier_head dsi_freq_head;
 					touch_cdev->mdata->power && \
 					IS_DEEPSLEEP_MODE)
 
-static int ts_mmi_queued_stop(struct ts_mmi_dev *touch_cdev) {
+static int ts_mmi_panel_off(struct ts_mmi_dev *touch_cdev) {
 	int ret = 0;
 
 	if (atomic_cmpxchg(&touch_cdev->touch_stopped, 0, 1) == 1)
 		return 0;
+
+	atomic_set(&touch_cdev->resume_should_stop, 1);
 
 	TRY_TO_CALL(pre_suspend);
 	if (touch_cdev->pdata.gestures_enabled || touch_cdev->pdata.cli_gestures_enabled ||
@@ -54,24 +56,6 @@ static int ts_mmi_queued_stop(struct ts_mmi_dev *touch_cdev) {
 		if(touch_cdev->gesture_mode_type != 0 || touch_cdev->pdata.support_liquid_detection != 0) {
 			dev_info(DEV_MMI, "%s: try to enter Gesture mode\n", __func__);
 			TRY_TO_CALL(panel_state, touch_cdev->pm_mode, TS_MMI_PM_GESTURE);
-		}
-		if(touch_cdev->gesture_mode_type != 0) {
-			if(touch_cdev->gesture_mode_type & 0x01) {
-				dev_info(DEV_MMI, "%s: try to enter zero Gesture mode\n", __func__);
-				TRY_TO_CALL(panel_state, touch_cdev->pm_mode, TS_MMI_PM_GESTURE_ZERO);
-			}
-			if(touch_cdev->gesture_mode_type & 0x02) {
-				dev_info(DEV_MMI, "%s: try to enter single Gesture mode\n", __func__);
-				TRY_TO_CALL(panel_state, touch_cdev->pm_mode, TS_MMI_PM_GESTURE_SINGLE);
-			}
-			if(touch_cdev->gesture_mode_type & 0x04) {
-				dev_info(DEV_MMI, "%s: try to enter double Gesture mode\n", __func__);
-				TRY_TO_CALL(panel_state, touch_cdev->pm_mode, TS_MMI_PM_GESTURE_DOUBLE);
-			}
-
-			dev_info(DEV_MMI, "%s: notify touch driver to switch gesture mode\n", __func__);
-			TRY_TO_CALL(panel_state, touch_cdev->pm_mode, TS_MMI_PM_GESTURE_SWITCH);
-
 			touch_cdev->pm_mode = TS_MMI_PM_GESTURE;
 		}
 #else
@@ -96,41 +80,13 @@ static int ts_mmi_queued_stop(struct ts_mmi_dev *touch_cdev) {
 #endif
 	TRY_TO_CALL(post_suspend);
 
-	if (NEED_TO_SET_PINCTRL) {
-		dev_dbg(DEV_MMI, "%s: touch pinctrl off\n", __func__);
-		TRY_TO_CALL(pinctrl, TS_MMI_PINCTL_OFF);
-	}
-
 	dev_info(DEV_MMI, "%s: done\n", __func__);
 
 	return 0;
 }
 
-static int ts_mmi_panel_off(struct ts_mmi_dev *touch_cdev)
-{
-	kfifo_put(&touch_cdev->cmd_pipe, TS_MMI_DO_SLEEP);
-	/* schedule_delayed_work returns true if work has been scheduled */
-	/* and false otherwise, thus return 0 on success to comply POSIX */
-	return schedule_delayed_work(&touch_cdev->work, 0) == false;
-}
-
-static int ts_mmi_power_off(struct ts_mmi_dev *touch_cdev)
-{
-	kfifo_put(&touch_cdev->cmd_pipe, TS_MMI_DO_POWER_OFF);
-	/* schedule_delayed_work returns true if work has been scheduled */
-	/* and false otherwise, thus return 0 on success to comply POSIX */
-	return schedule_delayed_work(&touch_cdev->work, 0) == false;
-}
-
-static int ts_mmi_power_on(struct ts_mmi_dev *touch_cdev)
-{
-	kfifo_put(&touch_cdev->cmd_pipe, TS_MMI_DO_POWER_ON);
-	/* schedule_delayed_work returns true if work has been scheduled */
-	/* and false otherwise, thus return 0 on success to comply POSIX */
-	return schedule_delayed_work(&touch_cdev->work, 0) == false;
-}
-
 static int inline ts_mmi_panel_on(struct ts_mmi_dev *touch_cdev) {
+	atomic_set(&touch_cdev->resume_should_stop, 0);
 	kfifo_put(&touch_cdev->cmd_pipe, TS_MMI_DO_RESUME);
 	/* schedule_delayed_work returns true if work has been scheduled */
 	/* and false otherwise, thus return 0 on success to comply POSIX */
@@ -145,19 +101,62 @@ static int ts_mmi_panel_event_handle(struct ts_mmi_dev *touch_cdev, enum ts_mmi_
 	/* for in-cell design touch solutions */
 	switch (event) {
 	case TS_MMI_EVENT_PRE_DISPLAY_OFF:
+		cancel_delayed_work_sync(&touch_cdev->work);
+		cancel_delayed_work_sync(&touch_cdev->ps_work);
 		ts_mmi_panel_off(touch_cdev);
+		if (NEED_TO_SET_PINCTRL) {
+			dev_dbg(DEV_MMI, "%s: touch pinctrl off\n", __func__);
+			TRY_TO_CALL(pinctrl, TS_MMI_PINCTL_OFF);
+		}
 		break;
 
 	case TS_MMI_EVENT_DISPLAY_OFF:
-		ts_mmi_power_off(touch_cdev);
+		if (NEED_TO_SET_POWER) {
+			/* then proceed with de-powering */
+			TRY_TO_CALL(power, TS_MMI_POWER_OFF);
+			dev_dbg(DEV_MMI, "%s: touch powered off\n", __func__);
+		}
 		break;
 
 	case TS_MMI_EVENT_PRE_DISPLAY_ON:
-		ts_mmi_power_on(touch_cdev);
+#ifdef CONFIG_TOUCHSCREEN_EARLY_RESET_ON_RESUME
+		if (NEED_TO_SET_POWER) {
+			/* powering on early */
+			TRY_TO_CALL(power, TS_MMI_POWER_ON);
+			dev_dbg(DEV_MMI, "%s: touch powered on\n", __func__);
+		} else {
+			dev_info(DEV_MMI, "%s: ts_mmi_panel_on\n", __func__);
+			ts_mmi_panel_on(touch_cdev);
+		}
+#else
+		if (NEED_TO_SET_POWER) {
+			/* powering on early */
+			TRY_TO_CALL(power, TS_MMI_POWER_ON);
+			dev_dbg(DEV_MMI, "%s: touch powered on\n", __func__);
+		} else if (touch_cdev->pdata.reset &&
+			touch_cdev->mdata->reset) {
+			/* Power is not off in previous suspend.
+			 * But need reset IC in resume.
+			 */
+			dev_dbg(DEV_MMI, "%s: resetting...\n", __func__);
+			TRY_TO_CALL(reset, TS_MMI_RESET_HARD);
+		}
+#endif
 		break;
 
 	case TS_MMI_EVENT_DISPLAY_ON:
+#ifdef CONFIG_TOUCHSCREEN_EARLY_RESET_ON_RESUME
+		if (NEED_TO_SET_POWER) {
+			ts_mmi_panel_on(touch_cdev);
+		}
+#else
+		/* out of reset to allow wait for boot complete */
+		if (NEED_TO_SET_PINCTRL) {
+			TRY_TO_CALL(pinctrl, TS_MMI_PINCTL_ON);
+			dev_dbg(DEV_MMI, "%s: touch pinctrl_on\n", __func__);
+		}
 		ts_mmi_panel_on(touch_cdev);
+#endif
 		break;
 
 	default:
@@ -187,17 +186,15 @@ static void ts_mmi_panel_cb(enum panel_event_notifier_tag tag,
 
 	dev_dbg(DEV_MMI, "%s: %s Notify_type=%d, early=%d, ctrl_dsi=%d\n", __func__,
 		EVENT_PRE_DISPLAY_OFF ? "EVENT_PRE_DISPLAY_OFF" :
-		(EVENT_DISPLAY_LP ? "EVENT_DISPLAY_LP" :
 		(EVENT_DISPLAY_OFF ?     "EVENT_DISPLAY_OFF" :
 		(EVENT_PRE_DISPLAY_ON ?   "EVENT_PRE_DISPLAY_ON" :
-		(EVENT_DISPLAY_ON ?       "EVENT_DISPLAY_ON" : "Unknown")))),
+		(EVENT_DISPLAY_ON ?       "EVENT_DISPLAY_ON" : "Unknown"))),
 		event, (evdata.early_trigger ? 1 : 0), touch_cdev->pdata.ctrl_dsi);
 
 	panel_event = EVENT_PRE_DISPLAY_OFF ? TS_MMI_EVENT_PRE_DISPLAY_OFF :
-		(EVENT_DISPLAY_LP ? TS_MMI_EVENT_PRE_DISPLAY_OFF :
 		(EVENT_DISPLAY_OFF ? TS_MMI_EVENT_DISPLAY_OFF :
 		(EVENT_PRE_DISPLAY_ON ? TS_MMI_EVENT_PRE_DISPLAY_ON :
-		(EVENT_DISPLAY_ON ? TS_MMI_EVENT_DISPLAY_ON : TS_MMI_EVENT_UNKNOWN))));
+		(EVENT_DISPLAY_ON ? TS_MMI_EVENT_DISPLAY_ON : TS_MMI_EVENT_UNKNOWN)));
 
 	ts_mmi_panel_event_handle(touch_cdev, panel_event);
 
@@ -220,20 +217,18 @@ static int ts_mmi_panel_cb(struct notifier_block *nb,
 
 	dev_dbg(DEV_MMI,"%s: %s event(%lu), ctrl_dsi=%d, idx=%d\n", __func__,
 		EVENT_PRE_DISPLAY_OFF ? "EVENT_PRE_DISPLAY_OFF" :
-		(EVENT_DISPLAY_LP ? "EVENT_DISPLAY_LP" :
 		(EVENT_DISPLAY_OFF ?     "EVENT_DISPLAY_OFF" :
 		(EVENT_PRE_DISPLAY_ON ?   "EVENT_PRE_DISPLAY_ON" :
-		(EVENT_DISPLAY_ON ?       "EVENT_DISPLAY_ON" : "Unknown")))),
+		(EVENT_DISPLAY_ON ?       "EVENT_DISPLAY_ON" : "Unknown"))),
 		event, touch_cdev->pdata.ctrl_dsi, idx);
 
 	if (touch_cdev->pdata.ctrl_dsi != idx)
 		return 0;
 
 	panel_event = EVENT_PRE_DISPLAY_OFF ? TS_MMI_EVENT_PRE_DISPLAY_OFF :
-		(EVENT_DISPLAY_LP ? TS_MMI_EVENT_PRE_DISPLAY_OFF :
 		(EVENT_DISPLAY_OFF ? TS_MMI_EVENT_DISPLAY_OFF :
 		(EVENT_PRE_DISPLAY_ON ? TS_MMI_EVENT_PRE_DISPLAY_ON :
-		(EVENT_DISPLAY_ON ? TS_MMI_EVENT_DISPLAY_ON : TS_MMI_EVENT_UNKNOWN))));
+		(EVENT_DISPLAY_ON ? TS_MMI_EVENT_DISPLAY_ON : TS_MMI_EVENT_UNKNOWN)));
 
 	ret = ts_mmi_panel_event_handle(touch_cdev, panel_event);
 
@@ -263,39 +258,6 @@ static inline void ts_mmi_restore_settings(struct ts_mmi_dev *touch_cdev)
 	dev_dbg(DEV_MMI, "%s: done\n", __func__);
 }
 
-static void ts_mmi_queued_power_on(struct ts_mmi_dev *touch_cdev)
-{
-	int ret = 0;
-
-	if (NEED_TO_SET_POWER) {
-		/* powering on early */
-		TRY_TO_CALL(power, TS_MMI_POWER_ON);
-		dev_dbg(DEV_MMI, "%s: touch powered on\n", __func__);
-	} else if (touch_cdev->pdata.reset &&
-		touch_cdev->mdata->reset) {
-		/* Power is not off in previous suspend.
-		 * But need reset IC in resume.
-		 */
-		dev_dbg(DEV_MMI, "%s: resetting...\n", __func__);
-		TRY_TO_CALL(reset, TS_MMI_RESET_HARD);
-	}
-
-	touch_cdev->touch_powered = true;
-}
-
-static void ts_mmi_queued_power_off(struct ts_mmi_dev *touch_cdev)
-{
-	int ret = 0;
-
-	if (NEED_TO_SET_POWER) {
-		/* then proceed with de-powering */
-		TRY_TO_CALL(power, TS_MMI_POWER_OFF);
-		dev_dbg(DEV_MMI, "%s: touch powered off\n", __func__);
-	}
-
-	touch_cdev->touch_powered = false;
-}
-
 static void ts_mmi_queued_resume(struct ts_mmi_dev *touch_cdev)
 {
 	bool wait4_boot_complete = true;
@@ -303,12 +265,6 @@ static void ts_mmi_queued_resume(struct ts_mmi_dev *touch_cdev)
 
 	if (atomic_cmpxchg(&touch_cdev->touch_stopped, 1, 0) == 0)
 		return;
-
-	/* out of reset to allow wait for boot complete */
-	if (NEED_TO_SET_PINCTRL) {
-		TRY_TO_CALL(pinctrl, TS_MMI_PINCTL_ON);
-		dev_dbg(DEV_MMI, "%s: touch pinctrl_on\n", __func__);
-	}
 
 #ifdef TS_MMI_TOUCH_MULTIWAY_UPDATE_FW
 	if (touch_cdev->flash_mode == FW_PARAM_MODE &&\
@@ -360,8 +316,10 @@ static void ts_mmi_queued_resume(struct ts_mmi_dev *touch_cdev)
 			TRY_TO_CALL(drv_irq, TS_MMI_IRQ_ON);
 	}
 
+#ifndef CONFIG_TOUCHCLASS_MMI_IRQ_ON_ONCE
 	if (IS_DEEPSLEEP_MODE)
 		TRY_TO_CALL(drv_irq, TS_MMI_IRQ_ON);
+#endif
 
 	TRY_TO_CALL(post_resume);
 
@@ -370,14 +328,10 @@ static void ts_mmi_queued_resume(struct ts_mmi_dev *touch_cdev)
 	 */
 	mutex_lock(&touch_cdev->extif_mutex);
 	ts_mmi_restore_settings(touch_cdev);
-	touch_cdev->double_tap_pressed = false;
-	touch_cdev->udfps_pressed = false;
 	touch_cdev->pm_mode = TS_MMI_PM_ACTIVE;
 	mutex_unlock(&touch_cdev->extif_mutex);
 	dev_info(DEV_MMI, "%s: done\n", __func__);
 }
-
-static inline int ts_mmi_ps_get_state(struct power_supply *psy, bool *present);
 
 static void ts_mmi_worker_func(struct work_struct *w)
 {
@@ -392,50 +346,18 @@ static void ts_mmi_worker_func(struct work_struct *w)
 
 	while (kfifo_get(&touch_cdev->cmd_pipe, &cmd)) {
 		switch (cmd) {
-		case TS_MMI_DO_POWER_ON:
-			ts_mmi_queued_power_on(touch_cdev);
-			break;
-
 		case TS_MMI_DO_RESUME:
+			ret = atomic_read(&touch_cdev->resume_should_stop);
+			if (ret) {
+				dev_info(DEV_MMI, "%s: resume cancelled\n", __func__);
+				break;
+			}
 			ts_mmi_queued_resume(touch_cdev);
 				break;
 
-		case TS_MMI_DO_SLEEP:
-			ts_mmi_queued_stop(touch_cdev);
-			break;
-
-		case TS_MMI_DO_POWER_OFF:
-			ts_mmi_queued_power_off(touch_cdev);
-			break;
-
-		case TS_MMI_DO_PS: {
-			struct power_supply *psy;
-			bool present;
-
-			psy = power_supply_get_by_name("usb");
-			if (!psy)
-				psy = power_supply_get_by_name("wireless");
-
-			if (!psy)
-				break;
-
-			ret = ts_mmi_ps_get_state(psy, &present);
-
-			power_supply_put(psy);
-
-			if (ret)
-				break;
-
-			if (touch_cdev->ps_is_present_set &&
-			    touch_cdev->ps_is_present == present)
-				break;
-
-			touch_cdev->ps_is_present = present;
-			touch_cdev->ps_is_present_set = true;
-
+		case TS_MMI_DO_PS:
 			TRY_TO_CALL(charger_mode, (int)touch_cdev->ps_is_present);
 				break;
-		}
 
 		case TS_MMI_DO_REFRESH_RATE:
 			TRY_TO_CALL(refresh_rate, (int)touch_cdev->refresh_rate);
@@ -478,17 +400,6 @@ static void ts_mmi_worker_func(struct work_struct *w)
 		case TS_MMI_DO_LIQUID_DETECTION:
 				TRY_TO_CALL(update_liquid_detect_mode, touch_cdev->lpd_state);
 				break;
-
-		case TS_MMI_SET_GESTURES:
-			if (touch_cdev->touch_powered)
-				break;
-
-			ts_mmi_queued_power_on(touch_cdev);
-			ts_mmi_queued_resume(touch_cdev);
-			ts_mmi_queued_stop(touch_cdev);
-			ts_mmi_queued_power_off(touch_cdev);
-
-			break;
 
 		default:
 			dev_dbg(DEV_MMI, "%s: unknown command %d\n", __func__, cmd);
@@ -541,6 +452,41 @@ static inline int ts_mmi_ps_get_state(struct power_supply *psy, bool *present)
 	return 0;
 }
 
+static void ts_mmi_ps_worker_func(struct work_struct *w)
+{
+	struct delayed_work *ps_dw =
+		container_of(w, struct delayed_work, work);
+	struct ts_mmi_dev *touch_cdev =
+		container_of(ps_dw, struct ts_mmi_dev, ps_work);
+	int ret = 0;
+
+	if (!IS_ERR_OR_NULL(touch_cdev->psy)) {
+		ret = ts_mmi_ps_get_state(touch_cdev->psy, &touch_cdev->present);
+		if (ret) {
+			dev_err(DEV_MMI, "%s: failed to get power supply status: %d\n",
+				__func__, ret);
+		} else {
+			if (!(touch_cdev->psy && touch_cdev->psy->desc->name &&
+				(!strncmp(touch_cdev->psy->desc->name, "usb", sizeof("usb")) ||
+				!strncmp(touch_cdev->psy->desc->name, "wireless", sizeof("wireless")))))
+			{
+				dev_dbg(DEV_MMI, "%s: WARN: psy=%s skip\n", __func__, touch_cdev->psy->desc->name);
+				return;
+			}
+
+			dev_dbg(DEV_MMI, "%s: psy name =%s,  psy status: cur=%d, prev=%d\n",
+				__func__, touch_cdev->psy->desc->name, touch_cdev->present, touch_cdev->ps_is_present);
+			if (touch_cdev->ps_is_present != touch_cdev->present) {
+				touch_cdev->ps_is_present = touch_cdev->present;
+				if (is_touch_active) {
+					dev_dbg(DEV_MMI, "%s: call charger_mode ps_is_present=%d\n", __func__, touch_cdev->ps_is_present);
+					TRY_TO_CALL(charger_mode, (int)touch_cdev->ps_is_present);
+				}
+			}
+		}
+	}
+}
+
 static int ts_mmi_charger_cb(struct notifier_block *self,
 				unsigned long event, void *ptr)
 {
@@ -548,14 +494,18 @@ static int ts_mmi_charger_cb(struct notifier_block *self,
 					self, struct ts_mmi_dev, ps_notif);
 	struct power_supply *psy = ptr;
 
+	touch_cdev->psy = ptr;
+
 	if (!((event == PSY_EVENT_PROP_CHANGED) && psy &&
 			psy->desc->get_property && psy->desc->name &&
 			(!strncmp(psy->desc->name, "usb", sizeof("usb")) ||
 			!strncmp(psy->desc->name, "wireless", sizeof("wireless")))))
 		return 0;
 
-	kfifo_put(&touch_cdev->cmd_pipe, TS_MMI_DO_PS);
-	schedule_delayed_work(&touch_cdev->work, 0);
+	dev_dbg(DEV_MMI, "%s: psy name =%s, event=%lu, usb status: cur=%d, prev=%d\n",
+				__func__, psy->desc->name, event, touch_cdev->present, touch_cdev->ps_is_present);
+
+	schedule_delayed_work(&touch_cdev->ps_work, 0);
 
 	return 0;
 }
@@ -660,19 +610,42 @@ int ts_mmi_notifiers_register(struct ts_mmi_dev *touch_cdev)
 	dev_info(DEV_TS, "%s: Start notifiers init.\n", __func__);
 
 	INIT_DELAYED_WORK(&touch_cdev->work, ts_mmi_worker_func);
+	INIT_DELAYED_WORK(&touch_cdev->ps_work, ts_mmi_ps_worker_func);
 	ret = kfifo_alloc(&touch_cdev->cmd_pipe,
 				sizeof(unsigned int)* 10, GFP_KERNEL);
 	if (ret)
 		goto FIFO_ALLOC_FAILED;
 
 	if (touch_cdev->pdata.usb_detection) {
+		struct power_supply *psy = NULL;
+		bool present = 0;
 		touch_cdev->ps_notif.notifier_call = ts_mmi_charger_cb;
 		ret = power_supply_reg_notifier(&touch_cdev->ps_notif);
 		if (ret)
 			goto PS_NOTIF_REGISTER_FAILED;
 
+		psy = power_supply_get_by_name("usb");
+		if (psy) {
+			ret = ts_mmi_ps_get_state(psy, &present);
+			if (!ret)
+				touch_cdev->ps_is_present |= present;
+			power_supply_put(psy);
+			psy = NULL;
+		}
+
+		psy = power_supply_get_by_name("wireless");
+		if (psy) {
+			ret = ts_mmi_ps_get_state(psy, &present);
+			if (!ret)
+				touch_cdev->ps_is_present |= present;
+			power_supply_put(psy);
+			psy = NULL;
+		}
+
 		kfifo_put(&touch_cdev->cmd_pipe, TS_MMI_DO_PS);
 		schedule_delayed_work(&touch_cdev->work, 0);
+		dev_info(DEV_MMI, "%s: USB initial status=%d\n",
+			__func__, touch_cdev->ps_is_present);
 	}
 
 	/*
@@ -711,6 +684,7 @@ int ts_mmi_notifiers_register(struct ts_mmi_dev *touch_cdev)
 
 FREQ_NOTIF_REGISTER_FAILED:
 	cancel_delayed_work(&touch_cdev->work);
+	cancel_delayed_work(&touch_cdev->ps_work);
 PS_NOTIF_REGISTER_FAILED:
 	kfifo_free(&touch_cdev->cmd_pipe);
 FIFO_ALLOC_FAILED:
@@ -740,6 +714,7 @@ void ts_mmi_notifiers_unregister(struct ts_mmi_dev *touch_cdev)
 		ts_mmi_lpd_notifier_register(touch_cdev, false);
 
 	cancel_delayed_work(&touch_cdev->work);
+	cancel_delayed_work(&touch_cdev->ps_work);
 	kfifo_free(&touch_cdev->cmd_pipe);
 	dev_info(DEV_MMI, "%s:notifiers_unregister finish", __func__);
 }

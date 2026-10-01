@@ -66,10 +66,16 @@ extern void fts_mmi_dev_unregister(struct fts_ts_data *ts_data);
 #define INTERVAL_READ_REG                   200  /* unit:ms */
 #define TIMEOUT_READ_REG                    1000 /* unit:ms */
 #if FTS_POWER_SOURCE_CUST_EN
-#define FTS_VTG_MIN_UV                      2800000
+#define FTS_VTG_MIN_UV                      3300000
 #define FTS_VTG_MAX_UV                      3300000
 #define FTS_I2C_VTG_MIN_UV                  1800000
 #define FTS_I2C_VTG_MAX_UV                  1800000
+#endif
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
+#define FTS_GET_NAMED_GPIO(np,name,idx,flags_ptr) of_get_named_gpio(np,name,idx)
+#else
+#define FTS_GET_NAMED_GPIO(np,name,idx,flags_ptr) of_get_named_gpio_flags(np,name,idx,flags_ptr)
 #endif
 
 /*****************************************************************************
@@ -537,6 +543,14 @@ static int fts_input_report_b(struct fts_ts_data *ts_data, struct ts_event *even
     bool touch_event_coordinate = false;
     struct input_dev *input_dev = ts_data->input_dev;
 
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+    unsigned int tool_type;
+#endif
+
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+    tool_type = ts_data->palm_on ? MT_TOOL_PALM : MT_TOOL_FINGER;
+#endif
+
     for (i = 0; i < ts_data->touch_event_num; i++) {
         if (fts_input_report_key(ts_data, &events[i]) == 0) {
             continue;
@@ -545,7 +559,12 @@ static int fts_input_report_b(struct fts_ts_data *ts_data, struct ts_event *even
         touch_event_coordinate = true;
         if (EVENT_DOWN(events[i].flag)) {
             input_mt_slot(input_dev, events[i].id);
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+            input_mt_report_slot_state(input_dev, tool_type, true);
+#else
             input_mt_report_slot_state(input_dev, MT_TOOL_FINGER, true);
+#endif
+
 #if FTS_REPORT_PRESSURE_EN
             input_report_abs(input_dev, ABS_MT_PRESSURE, events[i].p);
 #endif
@@ -570,7 +589,11 @@ static int fts_input_report_b(struct fts_ts_data *ts_data, struct ts_event *even
 #endif
         } else {
             input_mt_slot(input_dev, events[i].id);
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+            input_mt_report_slot_state(input_dev, tool_type, false);
+#else
             input_mt_report_slot_state(input_dev, MT_TOOL_FINGER, false);
+#endif
             touch_point_pre &= ~(1 << events[i].id);
             if (ts_data->log_level >= 1) FTS_DEBUG("[B]P%d UP!", events[i].id);
         }
@@ -581,7 +604,11 @@ static int fts_input_report_b(struct fts_ts_data *ts_data, struct ts_event *even
             if ((1 << i) & (touch_point_pre ^ touch_down_point_cur)) {
                 if (ts_data->log_level >= 1) FTS_DEBUG("[B]P%d UP!", i);
                 input_mt_slot(input_dev, i);
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+                input_mt_report_slot_state(input_dev, tool_type, false);
+#else
                 input_mt_report_slot_state(input_dev, MT_TOOL_FINGER, false);
+#endif
             }
         }
     }
@@ -826,6 +853,13 @@ static int fts_read_parse_touchdata(struct fts_ts_data *ts_data, u8 *touch_buf)
         FTS_INFO("touch buff is 0xff, need recovery state");
         return TOUCH_FW_INIT;
     }
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+    if ((touch_buf[0] & 0x02) == 0x02) {
+        ts_data->palm_on = true;
+        FTS_INFO("touch palm on %d", touch_buf[0] & 0x02);
+    } else
+        ts_data->palm_on = false;
+#endif
 
     return ((touch_buf[FTS_TOUCH_E_NUM] >> 4) & 0x0F);
 }
@@ -1121,6 +1155,11 @@ static int fts_irq_read_report(struct fts_ts_data *ts_data)
 #endif
 
     case TOUCH_PROTOCOL_v2:
+#ifdef CONFIG_FTS_HARDWARE_STATUS
+        if (!ts_data->suspended) {
+            ts_data->open_status= !!touch_buf[3];
+        }
+#endif
 #if FTS_INPUT_PROTOCOL_V2
         fts_input_report_touch_pv2(ts_data, touch_buf);
 #else
@@ -1360,6 +1399,11 @@ static int fts_input_init(struct fts_ts_data *ts_data)
     input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR, 0, 0xFF, 0, 0);
 #if FTS_REPORT_PRESSURE_EN
     input_set_abs_params(input_dev, ABS_MT_PRESSURE, 0, 0xFF, 0, 0);
+#endif
+
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+    input_set_abs_params(input_dev, ABS_MT_TOOL_TYPE,
+            MT_TOOL_FINGER, MT_TOOL_PALM, 0, 0);
 #endif
 
     ret = input_register_device(input_dev);
@@ -2021,20 +2065,20 @@ static int fts_parse_dt(struct device *dev, struct fts_ts_platform_data *pdata)
 
 
 #ifdef CONFIG_FTS_VDD_GPIO_CONTROL
-    pdata->vdd_gpio = of_get_named_gpio_flags(np, "focaltech,vdd-gpio",
-                        0, &pdata->vdd_gpio_flags);
+    pdata->vdd_gpio = FTS_GET_NAMED_GPIO(np, "focaltech,vdd-gpio", 0,
+                      &pdata->vdd_gpio_flags);
     if (pdata->vdd_gpio < 0)
         FTS_ERROR("Unable to get vdd_gpio");
 #endif
 
     /* reset, irq gpio info */
-    pdata->reset_gpio = of_get_named_gpio_flags(np, "focaltech,reset-gpio",
-                        0, &pdata->reset_gpio_flags);
+    pdata->reset_gpio = FTS_GET_NAMED_GPIO(np, "focaltech,reset-gpio", 0,
+                        &pdata->reset_gpio_flags);
     if (pdata->reset_gpio < 0)
         FTS_ERROR("Unable to get reset_gpio");
 
-    pdata->irq_gpio = of_get_named_gpio_flags(np, "focaltech,irq-gpio",
-                      0, &pdata->irq_gpio_flags);
+    pdata->irq_gpio = FTS_GET_NAMED_GPIO(np, "focaltech,irq-gpio", 0,
+                      &pdata->irq_gpio_flags);
     if (pdata->irq_gpio < 0)
         FTS_ERROR("Unable to get irq_gpio");
 

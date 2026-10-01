@@ -132,8 +132,13 @@ enum CHECKSUM_MODE {
 	CHECKSUM_MODE_U16_LE,
 };
 
+#ifdef CONFIG_GTP_STYLUS_VSYNC
+#define MAX_SCAN_FREQ_NUM            8
+#define MAX_SCAN_RATE_NUM            8
+#else
 #define MAX_SCAN_FREQ_NUM            5
 #define MAX_SCAN_RATE_NUM            5
+#endif
 #define MAX_FREQ_NUM_STYLUS          8
 #define MAX_STYLUS_SCAN_FREQ_NUM     6
 #pragma pack(1)
@@ -299,6 +304,7 @@ struct goodix_ts_board_data {
 	int irq_gpio;
 	int avdd_gpio;
 	int iovdd_gpio;
+	int iovdden_gpio;
 	unsigned int  irq_flags;
 
 	unsigned int swap_axis;
@@ -325,6 +331,11 @@ struct goodix_ts_board_data {
 	bool stowed_mode_ctrl;
 	bool gesture_wait_pm;
 	bool pocket_mode_ctrl;
+	bool fw_upgrade_drv;
+	bool avdd_set;
+#ifdef CONFIG_GTP_MULTI_CONFIG
+	const char *panel_supplier;
+#endif
 };
 
 enum goodix_fw_update_mode {
@@ -513,6 +524,9 @@ struct goodix_mode_info {
 	int report_rate_mode;
 	int edge_mode[2];
 	int pitch_mode;
+#ifdef CONFIG_GTP_STYLUS_VSYNC
+	int vsync_mode;
+#endif
 	int liquid_detection;
 #ifdef GOODIX_PALM_SENSOR_EN
 	int palm_detection;
@@ -545,6 +559,7 @@ struct goodix_ts_core {
 	struct pinctrl_state *stylus_clk_suspend;
 
 	int power_on;
+	ktime_t start_time, end_time;
 	int irq;
 	size_t irq_trig_cnt;
 	int liquid_status;
@@ -611,6 +626,9 @@ struct goodix_ts_core {
 #endif
 #ifdef CONFIG_ENABLE_GTP_VIRTUAL_FOD
 	atomic_t fp_event;
+#endif
+#ifdef CONFIG_GTP_HARDWARE_STATUS
+	u8 open_status;
 #endif
 };
 

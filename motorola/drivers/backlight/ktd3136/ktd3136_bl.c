@@ -321,7 +321,7 @@ static int ktd3136_backlight_enable(struct ktd3136_data *drvdata)
 
 int ktd3136_set_brightness(struct ktd3136_data *drvdata, int brt_val)
 {
-	pr_info("%s brt_val is %d\n", __func__, brt_val);
+	pr_debug("%s brt_val is %d\n", __func__, brt_val);
 
 	if (drvdata->enable == false) {
 		if (brt_val == 0) {
@@ -345,6 +345,9 @@ int ktd3136_set_brightness(struct ktd3136_data *drvdata, int brt_val)
 		}else if(ALIGN_BL_MAPPING_GAMMA15 == drvdata->led_current_align){
 			brt_val = bl_mapping_gamma15[brt_val];
 			pr_info("%s bl_mapping gamma15 brt_val: %d\n", __func__, brt_val);
+		} else if(ALIGN_BL_MAPPING_1050_29MA == drvdata->led_current_align) {
+			brt_val = align_convert_1050nit_29ma[brt_val];
+			pr_info("%s align 1050 29mA convert brt_val is %d\n", __func__, brt_val);
 		} else if (drvdata->led_current_align)
 			pr_info("%s: unsupport align type: %d\n", __func__, drvdata->led_current_align);
 	}
@@ -720,11 +723,16 @@ static struct attribute_group ktd3136_attribute_group = {
 	.attrs = ktd3136_attributes
 };
 
+#ifdef KERNEL_ABOVE_6_6
+static int ktd3136_probe(struct i2c_client *client)
+#else
 static int ktd3136_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
+#endif
 {
 	struct ktd3136_data *drvdata;
 #ifdef KERNEL_ABOVE_4_14
+	struct backlight_device *bl_dev;
 	struct backlight_properties props;
 #endif
 	int err = 0;
@@ -788,8 +796,12 @@ static int ktd3136_probe(struct i2c_client *client,
 	props.type = BACKLIGHT_PLATFORM;
 	props.brightness = MAX_BRIGHTNESS;
 	props.max_brightness = MAX_BRIGHTNESS;
-	backlight_device_register(KTD3136_NAME, &client->dev,
+	bl_dev = backlight_device_register(KTD3136_NAME, &client->dev,
 					drvdata, &ktd3136_bl_ops, &props);
+	if (bl_dev ==NULL) {
+		pr_err("%s : bl_dev == NULL\n", __func__);
+		goto err_init;
+	}
 #endif
 	ktd3136_data_init(drvdata);
 	ktd3136_backlight_init(drvdata);
@@ -819,14 +831,22 @@ err_out:
 	return err;
 }
 
+#ifdef KERNEL_ABOVE_6_6
+static void ktd3136_remove(struct i2c_client *client)
+#else
 static int ktd3136_remove(struct i2c_client *client)
+#endif
 {
 	struct ktd3136_data *drvdata = i2c_get_clientdata(client);
 
 	led_classdev_unregister(&drvdata->led_dev);
 
 	kfree(drvdata);
+#ifdef KERNEL_ABOVE_6_6
+	return;
+#else
 	return 0;
+#endif
 }
 
 static const struct i2c_device_id ktd3136_id[] = {

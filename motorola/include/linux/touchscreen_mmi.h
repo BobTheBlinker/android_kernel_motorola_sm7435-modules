@@ -95,10 +95,6 @@
 	((event == DRM_PANEL_EVENT_UNBLANK) && \
 	 (!evdata.early_trigger))
 
-#define EVENT_DISPLAY_LP \
-	((event == DRM_PANEL_EVENT_BLANK_LP) && \
-	 (!evdata.early_trigger))
-
 #else /* CONFIG_DRM_PANEL_EVENT_NOTIFICATIONS */
 #if defined(CONFIG_DRM_PANEL_NOTIFICATIONS)
 #include <drm/drm_panel.h>
@@ -287,7 +283,6 @@ struct touch_clip_area {
  */
 struct ts_mmi_class_methods {
 	int     (*report_gesture)(struct gesture_event_data *gev);
-	int     (*report_gesture_self)(struct gesture_event_data *gev, struct input_dev *input_dev);
 	int     (*get_gesture_type)(struct device *dev, unsigned char *gesture_type);
 	int     (*report_palm)(bool value);
 	int     (*get_class_fname)(struct device *dev , const char **fname);
@@ -301,18 +296,8 @@ struct ts_mmi_class_methods {
 enum ts_mmi_pm_mode {
 	TS_MMI_PM_DEEPSLEEP = 0,
 	TS_MMI_PM_GESTURE,
-	TS_MMI_PM_ACTIVE,
-	TS_MMI_PM_GESTURE_SINGLE,
-	TS_MMI_PM_GESTURE_DOUBLE,
-	TS_MMI_PM_GESTURE_ZERO,
-	TS_MMI_PM_GESTURE_SWITCH,
-};
-
-enum ts_mmi_gesture_bit {
-	TS_MMI_GESTURE_ZERO = BIT(0),
-	TS_MMI_GESTURE_SINGLE = BIT(1),
-	TS_MMI_GESTURE_DOUBLE = BIT(2),
-};
+	TS_MMI_PM_ACTIVE
+	};
 
 enum ts_mmi_panel_event {
 	TS_MMI_EVENT_PRE_DISPLAY_OFF,
@@ -324,16 +309,12 @@ enum ts_mmi_panel_event {
 };
 
 enum ts_mmi_work {
-	TS_MMI_DO_POWER_ON,
 	TS_MMI_DO_RESUME,
-	TS_MMI_DO_SLEEP,
-	TS_MMI_DO_POWER_OFF,
 	TS_MMI_DO_PS,
 	TS_MMI_DO_REFRESH_RATE,
 	TS_MMI_DO_FPS,
 	TS_MMI_TASK_INIT,
 	TS_MMI_DO_LIQUID_DETECTION,
-	TS_MMI_SET_GESTURES,
 };
 
 #define TS_MMI_RESET_SOFT	0
@@ -515,10 +496,11 @@ struct ts_mmi_dev {
 	struct pinctrl_state		*pinctrl_off_state;
 
 	atomic_t		touch_stopped;
-	bool			touch_powered;
 	enum ts_mmi_pm_mode	pm_mode;
 
+	atomic_t		resume_should_stop;
 	struct delayed_work	work;
+	struct delayed_work	ps_work;
 	struct kfifo		cmd_pipe;
 
 	struct notifier_block	freq_nb;
@@ -526,8 +508,9 @@ struct ts_mmi_dev {
 
 	struct work_struct	ps_notify_work;
 	struct notifier_block	ps_notif;
-	bool			ps_is_present_set;
 	bool			ps_is_present;
+	bool			present;
+	struct			power_supply *psy;
 
 	struct notifier_block	fps_notif;
 	bool is_fps_registered;	/* FPS notif registration might be delayed */
@@ -570,10 +553,6 @@ struct ts_mmi_dev {
 	struct attribute_group	*extern_group;
 	struct list_head	node;
 	struct touch_clip_area clip;
-
-	bool			double_tap_pressed;
-	bool			udfps_pressed;
-
 	/*
 	 * vendor provided
 	 */

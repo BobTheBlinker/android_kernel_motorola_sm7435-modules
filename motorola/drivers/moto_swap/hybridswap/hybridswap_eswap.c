@@ -16,28 +16,10 @@
 #include <linux/healthinfo/fg.h>
 #endif
 #include <linux/version.h>
-
-#ifdef CONFIG_ZRAM_5_4
-#include "../zram-5.4/zram_drv.h"
-#include "../zram-5.4/zram_drv_internal.h"
-#define MEMCG_OEM_DATA(memcg) ((memcg)->android_oem_data1)
-#elif defined CONFIG_ZRAM_5_15
-#include "../zram-5.15/zram_drv.h"
-#include "../zram-5.15/zram_drv_internal.h"
-#define BIO_MAX_PAGES BIO_MAX_VECS
-#define MEMCG_OEM_DATA(memcg) ((memcg)->android_oem_data1[0])
-#elif defined CONFIG_ZRAM_6_1
-#include <linux/blkdev.h>
-#include <linux/sched/debug.h>
-#include "../zram-6.1/zram_drv.h"
-#include "../zram-6.1/zram_drv_internal.h"
-#define BIO_MAX_PAGES BIO_MAX_VECS
-#define MEMCG_OEM_DATA(memcg) ((memcg)->android_oem_data1[0])
-#else
-#include "../zram-5.10/zram_drv.h"
-#include "../zram-5.10/zram_drv_internal.h"
-#define MEMCG_OEM_DATA(memcg) ((memcg)->android_oem_data1)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+#include <linux/sched/task_stack.h>
 #endif
+
 #include "hybridswap_internal.h"
 #include "hybridswap.h"
 
@@ -66,10 +48,6 @@
 #define ENTRY_LOCK_BIT		ENTRY_MCG_SHIFT_HALF
 #define ENTRY_DATA_BIT		(ENTRY_PTR_SHIFT + ENTRY_MCG_SHIFT_HALF + \
 		ENTRY_MCG_SHIFT_HALF + 1)
-
-#if IS_ENABLED(CONFIG_SPRD_UNISOC_MANUFACTURER_MODULE)
-#define MAX_FAULT_OUT_TIMEOUT 60*1000 //60s
-#endif
 
 struct zs_eswap_para {
 	struct hybridswap_page_pool *pool;
@@ -581,7 +559,7 @@ ssize_t hybridswap_report_show(struct device *dev,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 static inline ssize_t meminfo_show(struct hybstatus *stat, char *buf, ssize_t len)
 #else
-static inline ssize_t meminfo_show(struct hybstatus *stat, char *buf, ssize_t len)
+static inline meminfo_show(struct hybstatus *stat, char *buf, ssize_t len)
 #endif
 {
 	unsigned long eswap_total_pages = 0, eswap_compressed_pages = 0;
@@ -797,11 +775,7 @@ static void hybridswap_wait_io_finish(struct hybridswap_io_req *req)
 	if (req->io_para.class == HYB_FAULT_OUT) {
 		hybp(HYB_DEBUG, "fault out wait finish start\n");
 		if (!wait_for_completion_io_timeout(&req->io_end_flag,
-#if IS_ENABLED(CONFIG_SPRD_UNISOC_MANUFACTURER_MODULE)
-				msecs_to_jiffies(MAX_FAULT_OUT_TIMEOUT)))
-#else
 				MAX_SCHEDULE_TIMEOUT))
-#endif
 			hybp(HYB_ERR, "fault out io submit timeout");
 
 		return;
@@ -1539,7 +1513,14 @@ static void hybperf_init_monitor(
 
 	record->task = current;
 	get_task_struct(record->task);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+	if (object_is_on_stack((void *)&record->lat_monitor))
+		timer_setup_on_stack(&record->lat_monitor, hybperf_warning, 0);
+	else
+		timer_setup(&record->lat_monitor, hybperf_warning, 0);
+#else
 	timer_setup(&record->lat_monitor, hybperf_warning, 0);
+#endif
 	mod_timer(&record->lat_monitor,
 			jiffies + msecs_to_jiffies(record->warn_level));
 }
@@ -1551,6 +1532,10 @@ static void hybperf_stop_monitor(
 		return;
 
 	del_timer_sync(&record->lat_monitor);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+	if (object_is_on_stack((void *)&record->lat_monitor))
+		destroy_timer_on_stack(&record->lat_monitor);
+#endif
 	put_task_struct(record->task);
 }
 
@@ -4127,10 +4112,14 @@ bool hybridswap_reach_life_protect(void)
 	return atomic64_read(&stat->reclaimin_bytes_daily) > quota;
 }
 
-void hybridswap_close_bdev(struct block_device *bdev, struct file *backing_dev)
+void hybridswap_close_bdev(struct zram *zram, struct block_device *bdev, struct file *backing_dev)
 {
-	if (bdev)
+	if (zram && bdev)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+		blkdev_put(bdev, zram);
+#else
 		blkdev_put(bdev, FMODE_READ | FMODE_WRITE | FMODE_EXCL);
+#endif
 
 	if (backing_dev)
 		filp_close(backing_dev, NULL);
@@ -4154,7 +4143,7 @@ struct file *hybridswap_open_bdev(const char *file_name)
 
 	if (unlikely(!S_ISBLK(backing_dev->f_mapping->host->i_mode))) {
 		hybp(HYB_ERR, "%s isn't a blk device\n", file_name);
-		hybridswap_close_bdev(NULL, backing_dev);
+		hybridswap_close_bdev(NULL, NULL, backing_dev);
 		return NULL;
 	}
 
@@ -4174,8 +4163,13 @@ int hybridswap_bind(struct zram *zram, const char *file_name)
 		return -EINVAL;
 
 	inode = backing_dev->f_mapping->host;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+	bdev = blkdev_get_by_dev(inode->i_rdev,
+			BLK_OPEN_READ | BLK_OPEN_WRITE, zram, NULL);
+#else
 	bdev = blkdev_get_by_dev(inode->i_rdev,
 			FMODE_READ | FMODE_WRITE | FMODE_EXCL, zram);
+#endif
 	if (IS_ERR(bdev)) {
 		hybp(HYB_ERR, "%s blkdev_fetch failed!\n", file_name);
 		err = PTR_ERR(bdev);
@@ -4197,7 +4191,7 @@ int hybridswap_bind(struct zram *zram, const char *file_name)
 	return 0;
 
 out:
-	hybridswap_close_bdev(bdev, backing_dev);
+	hybridswap_close_bdev(zram, bdev, backing_dev);
 
 	return err;
 }
