@@ -1,3 +1,6 @@
+# Lineage: stock parrot builds against mmi_charger
+CONFIG_USE_MMI_CHARGER ?= m
+
 # add -Wall to try to catch everything we can.
 EXTRA_CFLAGS += -Wall
 EXTRA_CFLAGS += -I$(srctree)/../sm7435-modules/motorola/include
