@@ -1,3 +1,11 @@
+# Lineage: stock mona (parrot 6.6) options
+CONFIG_DRM_PANEL_EVENT_NOTIFICATIONS ?= y
+CONFIG_INPUT_TOUCHSCREEN_MMI ?= y
+CONFIG_INPUT_GTP_PASSIVE_PEN_NOTIFIER ?= y
+CONFIG_BUILD_KERNEL_VARIANT_PERF ?= y
+CONFIG_GTP_FOD ?= y
+CONFIG_TOUCHSCREEN_GOODIX_BRL_SPI ?= y
+
 # add -Wall to try to catch everything we can.
 EXTRA_CFLAGS += -Wall
 ifneq ($(filter m y,$(CHANGE_STACK_FRAME_SIZE)),)
@@ -120,7 +128,7 @@ endif
 ifneq ($(findstring _factory,$(TARGET_PRODUCT)),)
 USE_TARGET_PRODUCT := $(strip $(subst _factory,, $(TARGET_PRODUCT)))
 else
-USE_TARGET_PRODUCT := $(TARGET_PRODUCT)
+USE_TARGET_PRODUCT := $(patsubst lineage_%,%,$(TARGET_PRODUCT))
 endif
 
 ifneq ($(filter oneli, $(USE_TARGET_PRODUCT)), )

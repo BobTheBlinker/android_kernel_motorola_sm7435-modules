@@ -1,3 +1,7 @@
+# Lineage: stock mona (parrot 6.6) options
+CONFIG_DRM_PANEL_EVENT_NOTIFICATIONS ?= y
+CONFIG_BUILD_FOR_ANDROID_V ?= y
+
 # add -Wall to try to catch everything we can.
 EXTRA_CFLAGS += -Wall
 EXTRA_CFLAGS += -I$(srctree)/../sm7435-modules/motorola/include
